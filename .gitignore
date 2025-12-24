@@ -1,0 +1,48 @@
+# Build directories
+build/
+out/
+cmake-build-*/
+
+# IDE
+.vs/
+.vscode/
+*.vcxproj.user
+*.suo
+*.user
+*.sln.docstates
+.idea/
+
+# Compiled files
+*.obj
+*.o
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+
+# Database files
+*.sdb
+*.sdb-wal
+*.sdb-journal
+
+# Test artifacts
+test_output/
+coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# Logs
+*.log
+
+# Package managers
+vcpkg_installed/
+
+# OS
+.DS_Store
+Thumbs.db

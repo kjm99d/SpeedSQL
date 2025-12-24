@@ -1,0 +1,5 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/SpeedDBTargets.cmake")
+
+check_required_components(SpeedDB)
