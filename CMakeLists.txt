@@ -49,6 +49,13 @@ set(SPEEDDB_SOURCES
     src/sql/parser.cpp
     src/util/hash.cpp
     src/util/value.cpp
+    # Crypto module
+    src/crypto/crypto_provider.cpp
+    src/crypto/cipher_none.cpp
+    src/crypto/cipher_aes.cpp
+    src/crypto/cipher_aria.cpp
+    src/crypto/cipher_seed.cpp
+    src/crypto/cipher_chacha20.cpp
 )
 
 # Header files
@@ -56,6 +63,7 @@ set(SPEEDDB_HEADERS
     include/speeddb.h
     include/speeddb_types.h
     include/speeddb_internal.h
+    include/speeddb_crypto.h
 )
 
 # Include directories
@@ -106,9 +114,24 @@ endif()
 
 # Examples
 if(SPEEDDB_BUILD_EXAMPLES)
+    # Basic usage example
     add_executable(speeddb_example examples/basic_usage.cpp)
     target_link_libraries(speeddb_example PRIVATE speeddb_static)
     set_target_properties(speeddb_example PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+
+    # Encryption example
+    add_executable(speeddb_crypto_example examples/encryption_example.cpp)
+    target_link_libraries(speeddb_crypto_example PRIVATE speeddb_static)
+    set_target_properties(speeddb_crypto_example PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+
+    # Custom cipher example
+    add_executable(speeddb_custom_cipher examples/custom_cipher_example.cpp)
+    target_link_libraries(speeddb_custom_cipher PRIVATE speeddb_static)
+    set_target_properties(speeddb_custom_cipher PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
 endif()

@@ -16,6 +16,14 @@ Ultra-fast file-based local database engine designed to overcome SQLite's limita
 - **Vector Search**: Built-in vector similarity search for AI/ML applications
 - **Full-Text Search**: Integrated FTS capabilities
 
+### Security & Encryption (CC Certified Ready)
+- **Multiple Cipher Support**: Pluggable encryption architecture
+- **AES-256-GCM**: NIST standard, hardware acceleration ready
+- **ARIA-256-GCM**: Korean national standard (KS X 1213), CC certified
+- **SEED-CBC**: Korean standard cipher (TTAS.KO-12.0004)
+- **ChaCha20-Poly1305**: Modern stream cipher, fast in software
+- **No Encryption**: Optional plaintext mode for development
+
 ## SQLite Limitations Addressed
 
 | Limitation | SQLite | SpeedDB |
@@ -119,12 +127,54 @@ if (rc == SPEEDDB_OK) {
 }
 ```
 
+### Encryption
+
+```c
+#include "speeddb.h"
+#include "speeddb_crypto.h"
+
+int main() {
+    speeddb* db;
+
+    // Open database
+    speeddb_open("secure.sdb", &db);
+
+    // Configure encryption
+    speeddb_crypto_config_t config = {
+        .cipher = SPEEDDB_CIPHER_AES_256_GCM,  // or ARIA_256_GCM for Korean CC
+        .kdf = SPEEDDB_KDF_PBKDF2_SHA256,
+        .kdf_iterations = 100000
+    };
+
+    // Set encryption key
+    speeddb_key_v2(db, "my_password", 11, &config);
+
+    // Use database normally - encryption is transparent
+    speeddb_exec(db, "CREATE TABLE secrets (id INTEGER, data TEXT)", NULL, NULL, NULL);
+
+    speeddb_close(db);
+    return 0;
+}
+```
+
+### Supported Ciphers
+
+| Cipher | Key Size | Mode | Use Case |
+|--------|----------|------|----------|
+| `SPEEDDB_CIPHER_NONE` | - | - | Development, testing |
+| `SPEEDDB_CIPHER_AES_256_GCM` | 256-bit | AEAD | General use, NIST compliant |
+| `SPEEDDB_CIPHER_AES_256_CBC` | 256-bit | CBC+HMAC | Legacy compatibility |
+| `SPEEDDB_CIPHER_ARIA_256_GCM` | 256-bit | AEAD | Korean CC certification |
+| `SPEEDDB_CIPHER_SEED_CBC` | 128-bit | CBC | Korean legacy systems |
+| `SPEEDDB_CIPHER_CHACHA20_POLY1305` | 256-bit | AEAD | Mobile, software-only |
+
 ## Architecture
 
 ```
 SpeedDB/
 ├── include/
 │   ├── speeddb.h           # Public C API
+│   ├── speeddb_crypto.h    # Encryption API
 │   ├── speeddb_types.h     # Type definitions
 │   └── speeddb_internal.h  # Internal structures
 ├── src/
@@ -138,6 +188,13 @@ SpeedDB/
 │   ├── sql/
 │   │   ├── lexer.cpp       # SQL tokenizer
 │   │   └── parser.cpp      # SQL parser
+│   ├── crypto/
+│   │   ├── crypto_provider.cpp  # Cipher registry
+│   │   ├── cipher_none.cpp      # No encryption
+│   │   ├── cipher_aes.cpp       # AES-256-GCM/CBC
+│   │   ├── cipher_aria.cpp      # ARIA-256 (Korean)
+│   │   ├── cipher_seed.cpp      # SEED (Korean)
+│   │   └── cipher_chacha20.cpp  # ChaCha20-Poly1305
 │   └── util/
 │       ├── hash.cpp        # CRC32, xxHash64
 │       └── value.cpp       # Value operations
@@ -168,28 +225,28 @@ SpeedDB/
 - [x] File I/O layer
 - [x] Buffer pool / page cache
 - [x] B+Tree index (basic)
-- [x] SQL lexer
-- [x] SQL parser
+- [x] SQL lexer & parser
+- [x] Encryption module (AES, ARIA, SEED, ChaCha20)
 - [ ] Query executor
 - [ ] Schema management
 
 ### v0.2
 - [ ] B+Tree page splits
 - [ ] WAL implementation
-- [ ] Transaction support
-- [ ] Multi-table joins
+- [ ] Full transaction support
+- [ ] Page-level encryption integration
 
 ### v0.3
 - [ ] Query optimizer
+- [ ] Multi-table joins
 - [ ] Secondary indexes
 - [ ] JSON functions
-- [ ] Aggregate functions
 
 ### v1.0
+- [ ] CC certification preparation
 - [ ] Vector search
 - [ ] Full-text search
 - [ ] Compression
-- [ ] Encryption
 
 ## License
 
