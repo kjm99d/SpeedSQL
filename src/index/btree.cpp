@@ -818,6 +818,31 @@ int btree_cursor_first(btree_cursor_t* cursor) {
     }
 }
 
+int btree_cursor_seek(btree_cursor_t* cursor, const value_t* key) {
+    if (!cursor || !cursor->tree || !key) return SPEEDSQL_MISUSE;
+
+    btree_t* tree = cursor->tree;
+
+    /* Use find_leaf to navigate to the correct leaf page */
+    buffer_page_t* leaf = find_leaf(tree, key);
+    if (!leaf) return SPEEDSQL_IOERR;
+
+    /* Binary search in leaf using existing search_leaf function */
+    bool exact;
+    uint16_t idx = search_leaf(leaf->data, key, tree->compare, &exact);
+
+    uint16_t count = get_key_count(leaf->data);
+
+    cursor->current_page = leaf->page_id;
+    cursor->current_slot = idx;
+    cursor->valid = (idx < count);
+    cursor->at_end = !cursor->valid;
+
+    buffer_pool_unpin(tree->pool, leaf, false);
+
+    return exact ? SPEEDSQL_OK : SPEEDSQL_NOTFOUND;
+}
+
 int btree_cursor_next(btree_cursor_t* cursor) {
     if (!cursor || !cursor->tree || !cursor->valid) return SPEEDSQL_MISUSE;
 

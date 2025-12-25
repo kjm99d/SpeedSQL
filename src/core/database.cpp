@@ -724,6 +724,135 @@ SPEEDSQL_API int speedsql_rollback(speedsql* db) {
 
     db->txn_state = TXN_NONE;
     db->current_txn = 0;
+    db->savepoint_count = 0;  /* Clear all savepoints */
+
+    mutex_unlock(&db->lock);
+    return SPEEDSQL_OK;
+}
+
+/* Savepoint support */
+SPEEDSQL_API int speedsql_savepoint(speedsql* db, const char* name) {
+    if (!db || !name) return SPEEDSQL_MISUSE;
+
+    mutex_lock(&db->lock);
+
+    /* Must be in a transaction */
+    if (db->txn_state == TXN_NONE) {
+        mutex_unlock(&db->lock);
+        sdb_set_error(db, SPEEDSQL_MISUSE, "No transaction in progress");
+        return SPEEDSQL_MISUSE;
+    }
+
+    /* Check savepoint limit */
+    if (db->savepoint_count >= 32) {
+        mutex_unlock(&db->lock);
+        sdb_set_error(db, SPEEDSQL_FULL, "Maximum savepoint depth reached (32)");
+        return SPEEDSQL_FULL;
+    }
+
+    /* Check for duplicate name */
+    for (int i = 0; i < db->savepoint_count; i++) {
+        if (strcmp(db->savepoints[i].name, name) == 0) {
+            mutex_unlock(&db->lock);
+            sdb_set_error(db, SPEEDSQL_CONSTRAINT, "Savepoint '%s' already exists", name);
+            return SPEEDSQL_CONSTRAINT;
+        }
+    }
+
+    /* Create savepoint entry */
+    auto* sp = &db->savepoints[db->savepoint_count];
+    strncpy(sp->name, name, sizeof(sp->name) - 1);
+    sp->name[sizeof(sp->name) - 1] = '\0';
+    sp->last_rowid_saved = db->last_rowid;
+    sp->total_changes_saved = db->total_changes;
+
+    /* Record in WAL */
+    if (db->wal) {
+        int rc = wal_savepoint(db->wal, db->current_txn, &sp->wal_lsn);
+        if (rc != SPEEDSQL_OK) {
+            mutex_unlock(&db->lock);
+            return rc;
+        }
+    } else {
+        sp->wal_lsn = 0;
+    }
+
+    db->savepoint_count++;
+
+    mutex_unlock(&db->lock);
+    return SPEEDSQL_OK;
+}
+
+SPEEDSQL_API int speedsql_release(speedsql* db, const char* name) {
+    if (!db || !name) return SPEEDSQL_MISUSE;
+
+    mutex_lock(&db->lock);
+
+    /* Find the savepoint */
+    int found_idx = -1;
+    for (int i = db->savepoint_count - 1; i >= 0; i--) {
+        if (strcmp(db->savepoints[i].name, name) == 0) {
+            found_idx = i;
+            break;
+        }
+    }
+
+    if (found_idx < 0) {
+        mutex_unlock(&db->lock);
+        sdb_set_error(db, SPEEDSQL_NOTFOUND, "Savepoint '%s' not found", name);
+        return SPEEDSQL_NOTFOUND;
+    }
+
+    /* Record in WAL */
+    if (db->wal) {
+        wal_release_savepoint(db->wal, db->current_txn);
+    }
+
+    /* Remove this savepoint and all savepoints after it */
+    db->savepoint_count = found_idx;
+
+    mutex_unlock(&db->lock);
+    return SPEEDSQL_OK;
+}
+
+SPEEDSQL_API int speedsql_rollback_to(speedsql* db, const char* name) {
+    if (!db || !name) return SPEEDSQL_MISUSE;
+
+    mutex_lock(&db->lock);
+
+    /* Find the savepoint */
+    int found_idx = -1;
+    for (int i = db->savepoint_count - 1; i >= 0; i--) {
+        if (strcmp(db->savepoints[i].name, name) == 0) {
+            found_idx = i;
+            break;
+        }
+    }
+
+    if (found_idx < 0) {
+        mutex_unlock(&db->lock);
+        sdb_set_error(db, SPEEDSQL_NOTFOUND, "Savepoint '%s' not found", name);
+        return SPEEDSQL_NOTFOUND;
+    }
+
+    auto* sp = &db->savepoints[found_idx];
+
+    /* Record in WAL */
+    if (db->wal) {
+        wal_rollback_to_savepoint(db->wal, db->current_txn, sp->wal_lsn);
+    }
+
+    /* Invalidate dirty pages (simplified - in production, would selectively undo) */
+    if (db->buffer_pool) {
+        buffer_pool_invalidate_dirty(db->buffer_pool, &db->db_file);
+    }
+
+    /* Restore state */
+    db->last_rowid = sp->last_rowid_saved;
+    db->total_changes = sp->total_changes_saved;
+
+    /* Remove savepoints after the one we're rolling back to, but keep this one */
+    db->savepoint_count = found_idx + 1;
 
     mutex_unlock(&db->lock);
     return SPEEDSQL_OK;

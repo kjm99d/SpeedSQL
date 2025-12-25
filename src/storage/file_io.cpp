@@ -339,7 +339,16 @@ int file_close(file_t* f) {
 }
 
 int file_read(file_t* f, uint64_t offset, void* buf, size_t len) {
-    if (!f || f->handle == INVALID_FILE_HANDLE) return SPEEDSQL_MISUSE;
+    if (!f) return SPEEDSQL_MISUSE;
+
+    /* In-memory database: return zeros (data is in buffer pool) */
+    if (f->handle == INVALID_FILE_HANDLE) {
+        if (f->path && strcmp(f->path, ":memory:") == 0) {
+            memset(buf, 0, len);
+            return SPEEDSQL_OK;
+        }
+        return SPEEDSQL_MISUSE;
+    }
 
     rwlock_rdlock(&f->lock);
 
@@ -355,7 +364,19 @@ int file_read(file_t* f, uint64_t offset, void* buf, size_t len) {
 }
 
 int file_write(file_t* f, uint64_t offset, const void* buf, size_t len) {
-    if (!f || f->handle == INVALID_FILE_HANDLE) return SPEEDSQL_MISUSE;
+    if (!f) return SPEEDSQL_MISUSE;
+
+    /* In-memory database: update size only, no actual I/O */
+    if (f->handle == INVALID_FILE_HANDLE) {
+        if (f->path && strcmp(f->path, ":memory:") == 0) {
+            if (offset + len > f->size) {
+                f->size = offset + len;
+            }
+            return SPEEDSQL_OK;
+        }
+        return SPEEDSQL_MISUSE;
+    }
+
     if (f->readonly) return SPEEDSQL_READONLY;
 
     rwlock_wrlock(&f->lock);
@@ -376,7 +397,15 @@ int file_write(file_t* f, uint64_t offset, const void* buf, size_t len) {
 }
 
 int file_sync(file_t* f) {
-    if (!f || f->handle == INVALID_FILE_HANDLE) return SPEEDSQL_MISUSE;
+    if (!f) return SPEEDSQL_MISUSE;
+
+    /* In-memory database: no-op */
+    if (f->handle == INVALID_FILE_HANDLE) {
+        if (f->path && strcmp(f->path, ":memory:") == 0) {
+            return SPEEDSQL_OK;
+        }
+        return SPEEDSQL_MISUSE;
+    }
 
     if (fsync(f->handle) != 0) {
         return SPEEDSQL_IOERR;
@@ -386,7 +415,17 @@ int file_sync(file_t* f) {
 }
 
 int file_truncate(file_t* f, uint64_t size) {
-    if (!f || f->handle == INVALID_FILE_HANDLE) return SPEEDSQL_MISUSE;
+    if (!f) return SPEEDSQL_MISUSE;
+
+    /* In-memory database: just update size */
+    if (f->handle == INVALID_FILE_HANDLE) {
+        if (f->path && strcmp(f->path, ":memory:") == 0) {
+            f->size = size;
+            return SPEEDSQL_OK;
+        }
+        return SPEEDSQL_MISUSE;
+    }
+
     if (f->readonly) return SPEEDSQL_READONLY;
 
     if (ftruncate(f->handle, size) != 0) {

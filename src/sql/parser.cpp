@@ -147,8 +147,14 @@ static expr_t* parse_primary(parser_t* parser) {
                                 expr->data.function.args,
                                 capacity * sizeof(expr_t*));
                         }
-                        expr->data.function.args[expr->data.function.arg_count++] =
-                            parse_expression(parser);
+                        /* Special handling for COUNT(*) - the * is treated as a placeholder */
+                        if (check(parser, TOK_STAR)) {
+                            advance(parser);
+                            expr->data.function.args[expr->data.function.arg_count++] = nullptr;
+                        } else {
+                            expr->data.function.args[expr->data.function.arg_count++] =
+                                parse_expression(parser);
+                        }
                     } while (match(parser, TOK_COMMA));
                 }
 
@@ -608,6 +614,11 @@ static parsed_stmt_t* parse_insert(parser_t* parser) {
             sdb_free(expr);
         } while (match(parser, TOK_COMMA));
 
+        /* If no explicit column list was provided, set insert_column_count from values */
+        if (stmt->insert_column_count == 0 && stmt->insert_row_count == 0) {
+            stmt->insert_column_count = value_idx;
+        }
+
         stmt->insert_values[stmt->insert_row_count++] = row;
 
         consume(parser, TOK_RPAREN, "Expected ')' after values");
@@ -860,8 +871,40 @@ parsed_stmt_t* parser_parse(parser_t* parser) {
     }
 
     if (match(parser, TOK_ROLLBACK)) {
+        /* Check for ROLLBACK TO SAVEPOINT name */
+        if (match(parser, TOK_TO)) {
+            match(parser, TOK_SAVEPOINT);  /* Optional SAVEPOINT keyword */
+            consume(parser, TOK_IDENT, "Expected savepoint name");
+            parsed_stmt_t* stmt = (parsed_stmt_t*)sdb_calloc(1, sizeof(parsed_stmt_t));
+            if (stmt) {
+                stmt->op = SQL_ROLLBACK_TO;
+                stmt->savepoint_name = copy_identifier(&parser->previous);
+            }
+            return stmt;
+        }
         parsed_stmt_t* stmt = (parsed_stmt_t*)sdb_calloc(1, sizeof(parsed_stmt_t));
         if (stmt) stmt->op = SQL_ROLLBACK;
+        return stmt;
+    }
+
+    if (match(parser, TOK_SAVEPOINT)) {
+        consume(parser, TOK_IDENT, "Expected savepoint name");
+        parsed_stmt_t* stmt = (parsed_stmt_t*)sdb_calloc(1, sizeof(parsed_stmt_t));
+        if (stmt) {
+            stmt->op = SQL_SAVEPOINT;
+            stmt->savepoint_name = copy_identifier(&parser->previous);
+        }
+        return stmt;
+    }
+
+    if (match(parser, TOK_RELEASE)) {
+        match(parser, TOK_SAVEPOINT);  /* Optional SAVEPOINT keyword */
+        consume(parser, TOK_IDENT, "Expected savepoint name");
+        parsed_stmt_t* stmt = (parsed_stmt_t*)sdb_calloc(1, sizeof(parsed_stmt_t));
+        if (stmt) {
+            stmt->op = SQL_RELEASE;
+            stmt->savepoint_name = copy_identifier(&parser->previous);
+        }
         return stmt;
     }
 
@@ -1031,6 +1074,9 @@ void parsed_stmt_free(parsed_stmt_t* stmt) {
         sdb_free(stmt->new_index->column_indices);
         sdb_free(stmt->new_index);
     }
+
+    /* Free savepoint name */
+    sdb_free(stmt->savepoint_name);
 
     sdb_free(stmt);
 }

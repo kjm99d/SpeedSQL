@@ -94,6 +94,185 @@ static int count_params_in_stmt(parsed_stmt_t* stmt) {
     return count;
 }
 
+/* Resolve column indices in an expression tree */
+static void resolve_column_indices(expr_t* expr, table_def_t* table) {
+    if (!expr || !table) return;
+
+    switch (expr->type) {
+        case EXPR_COLUMN:
+            if (expr->data.column_ref.index < 0 && expr->data.column_ref.column) {
+                const char* col_name = expr->data.column_ref.column;
+                for (uint32_t i = 0; i < table->column_count; i++) {
+                    if (table->columns[i].name &&
+                        strcasecmp(table->columns[i].name, col_name) == 0) {
+                        expr->data.column_ref.index = (int)i;
+                        break;
+                    }
+                }
+            }
+            break;
+
+        case EXPR_BINARY_OP:
+            resolve_column_indices(expr->data.binary.left, table);
+            resolve_column_indices(expr->data.binary.right, table);
+            break;
+
+        case EXPR_UNARY_OP:
+            resolve_column_indices(expr->data.unary.operand, table);
+            break;
+
+        case EXPR_FUNCTION:
+            for (int i = 0; i < expr->data.function.arg_count; i++) {
+                resolve_column_indices(expr->data.function.args[i], table);
+            }
+            break;
+
+        default:
+            break;
+    }
+}
+
+/* ============================================================================
+ * Index Selection for Query Optimization
+ * ============================================================================ */
+
+/* Find an index for a table by name */
+static index_def_t* find_index(speedsql* db, const char* index_name) {
+    if (!db || !index_name) return nullptr;
+
+    for (size_t i = 0; i < db->index_count; i++) {
+        if (db->indices[i].name &&
+            strcasecmp(db->indices[i].name, index_name) == 0) {
+            return &db->indices[i];
+        }
+    }
+    return nullptr;
+}
+
+/* Find an index for a table that covers a specific column */
+static index_def_t* find_index_for_column(speedsql* db, table_def_t* table,
+                                          const char* column_name) {
+    if (!db || !table || !column_name) return nullptr;
+
+    /* Find column index */
+    int col_idx = -1;
+    for (uint32_t i = 0; i < table->column_count; i++) {
+        if (table->columns[i].name &&
+            strcasecmp(table->columns[i].name, column_name) == 0) {
+            col_idx = (int)i;
+            break;
+        }
+    }
+
+    if (col_idx < 0) return nullptr;
+
+    /* Find index that starts with this column */
+    for (size_t i = 0; i < db->index_count; i++) {
+        if (db->indices[i].table_name &&
+            strcasecmp(db->indices[i].table_name, table->name) == 0 &&
+            db->indices[i].column_count > 0 &&
+            db->indices[i].column_indices &&
+            (int)db->indices[i].column_indices[0] == col_idx) {
+            return &db->indices[i];
+        }
+    }
+
+    return nullptr;
+}
+
+/* Check if expression is a simple column = value comparison */
+static bool is_equality_condition(expr_t* expr, const char** out_column, value_t** out_value) {
+    if (!expr || expr->type != EXPR_BINARY_OP) return false;
+    if (expr->data.binary.op != TOK_EQ) return false;
+
+    expr_t* left = expr->data.binary.left;
+    expr_t* right = expr->data.binary.right;
+
+    /* Check for column = literal or literal = column */
+    if (left && left->type == EXPR_COLUMN &&
+        right && right->type == EXPR_LITERAL) {
+        *out_column = left->data.column_ref.column;
+        *out_value = &right->data.literal;
+        return true;
+    }
+
+    if (left && left->type == EXPR_LITERAL &&
+        right && right->type == EXPR_COLUMN) {
+        *out_column = right->data.column_ref.column;
+        *out_value = &left->data.literal;
+        return true;
+    }
+
+    return false;
+}
+
+/* Try to build an index scan plan from WHERE clause */
+static plan_node_t* try_build_index_scan(speedsql* db, table_def_t* table,
+                                         expr_t* where, expr_t** remaining_where) {
+    if (!db || !table || !where) return nullptr;
+
+    *remaining_where = where;  /* Default: keep all WHERE conditions */
+
+    const char* column_name = nullptr;
+    value_t* search_value = nullptr;
+
+    /* Check if WHERE is a simple equality condition */
+    if (is_equality_condition(where, &column_name, &search_value)) {
+        /* Look for an index on this column */
+        index_def_t* index = find_index_for_column(db, table, column_name);
+        if (index && index->root_page != INVALID_PAGE_ID) {
+            /* Open index B+tree if not already open */
+            if (!index->index_tree) {
+                btree_t* idx_tree = (btree_t*)sdb_calloc(1, sizeof(btree_t));
+                if (!idx_tree) return nullptr;
+
+                int rc = btree_open(idx_tree, db->buffer_pool, &db->db_file,
+                                    index->root_page, value_compare);
+                if (rc != SPEEDSQL_OK) {
+                    sdb_free(idx_tree);
+                    return nullptr;
+                }
+                index->index_tree = idx_tree;
+            }
+
+            /* Found usable index! Create index scan plan */
+            plan_node_t* plan = (plan_node_t*)sdb_calloc(1, sizeof(plan_node_t));
+            if (!plan) return nullptr;
+
+            plan->type = PLAN_INDEX_SCAN;
+            plan->data.index_scan.index = index;
+            plan->data.index_scan.table = table;
+
+            /* Copy search key */
+            plan->data.index_scan.start_key = (value_t*)sdb_malloc(sizeof(value_t));
+            plan->data.index_scan.end_key = (value_t*)sdb_malloc(sizeof(value_t));
+            if (plan->data.index_scan.start_key) {
+                value_init_null(plan->data.index_scan.start_key);
+                value_copy(plan->data.index_scan.start_key, search_value);
+            }
+            if (plan->data.index_scan.end_key) {
+                value_init_null(plan->data.index_scan.end_key);
+                value_copy(plan->data.index_scan.end_key, search_value);
+            }
+
+            /* Initialize cursor and seek to the search key */
+            btree_cursor_init(&plan->data.index_scan.cursor,
+                              (btree_t*)index->index_tree);
+            btree_cursor_seek(&plan->data.index_scan.cursor,
+                              plan->data.index_scan.start_key);
+
+            /* Index handles this condition, so no remaining WHERE for this part */
+            *remaining_where = nullptr;
+
+            return plan;
+        }
+    }
+
+    /* TODO: Handle AND conditions - extract indexable part */
+    /* For now, just return nullptr to fall back to table scan */
+    return nullptr;
+}
+
 /* ============================================================================
  * Plan Management
  * ============================================================================ */
@@ -108,6 +287,14 @@ void plan_free(plan_node_t* plan) {
             break;
         case PLAN_INDEX_SCAN:
             btree_cursor_close(&plan->data.index_scan.cursor);
+            if (plan->data.index_scan.start_key) {
+                value_free(plan->data.index_scan.start_key);
+                sdb_free(plan->data.index_scan.start_key);
+            }
+            if (plan->data.index_scan.end_key) {
+                value_free(plan->data.index_scan.end_key);
+                sdb_free(plan->data.index_scan.end_key);
+            }
             break;
         default:
             break;
@@ -548,8 +735,61 @@ static int execute_create_index(speedsql_stmt* stmt) {
                def->column_count * sizeof(uint32_t));
     }
 
-    /* TODO: Create B+Tree for index and populate from table data */
-    idx->root_page = INVALID_PAGE_ID;
+    /* Create B+Tree for the index */
+    btree_t* idx_tree = (btree_t*)sdb_calloc(1, sizeof(btree_t));
+    if (!idx_tree) {
+        db->index_count++;  /* Still add index even without tree */
+        return SPEEDSQL_NOMEM;
+    }
+
+    int rc = btree_create(idx_tree, db->buffer_pool, &db->db_file, value_compare);
+    if (rc != SPEEDSQL_OK) {
+        sdb_free(idx_tree);
+        db->index_count++;
+        return rc;
+    }
+
+    idx->root_page = idx_tree->root_page;
+
+    /* Populate index from existing table data */
+    if (table->data_tree) {
+        btree_cursor_t cursor;
+        btree_cursor_init(&cursor, (btree_t*)table->data_tree);
+        btree_cursor_first(&cursor);
+
+        while (cursor.valid && !cursor.at_end) {
+            value_t row_key, row_value;
+            value_init_null(&row_key);
+            value_init_null(&row_value);
+
+            btree_cursor_key(&cursor, &row_key);
+            btree_cursor_value(&cursor, &row_value);
+
+            if (row_value.type == VAL_BLOB && row_value.data.blob.data) {
+                int col_count = *(int*)row_value.data.blob.data;
+                value_t* row_vals = (value_t*)((uint8_t*)row_value.data.blob.data + sizeof(int));
+
+                /* Extract indexed column value */
+                if (idx->column_count > 0 && idx->column_indices[0] < (uint32_t)col_count) {
+                    value_t* idx_key = &row_vals[idx->column_indices[0]];
+
+                    /* Insert into index: key = column value, value = rowid */
+                    btree_insert(idx_tree, idx_key, &row_key);
+                }
+            }
+
+            value_free(&row_key);
+            value_free(&row_value);
+            btree_cursor_next(&cursor);
+        }
+
+        btree_cursor_close(&cursor);
+    }
+
+    /* Update root_page in case it changed during inserts */
+    idx->root_page = idx_tree->root_page;
+    btree_close(idx_tree);
+    sdb_free(idx_tree);
 
     db->index_count++;
     return SPEEDSQL_OK;
@@ -611,6 +851,16 @@ static int execute_update(speedsql_stmt* stmt) {
     if (!table->data_tree) {
         sdb_set_error(stmt->db, SPEEDSQL_ERROR, "Table has no data tree");
         return SPEEDSQL_ERROR;
+    }
+
+    /* Resolve column indices in WHERE clause and SET expressions */
+    if (p->where) {
+        resolve_column_indices(p->where, table);
+    }
+    for (int i = 0; i < p->update_count; i++) {
+        if (p->update_exprs && p->update_exprs[i]) {
+            resolve_column_indices(p->update_exprs[i], table);
+        }
     }
 
     btree_t* tree = (btree_t*)table->data_tree;
@@ -761,6 +1011,11 @@ static int execute_delete(speedsql_stmt* stmt) {
     if (!table->data_tree) {
         sdb_set_error(stmt->db, SPEEDSQL_ERROR, "Table has no data tree");
         return SPEEDSQL_ERROR;
+    }
+
+    /* Resolve column indices in WHERE clause */
+    if (p->where) {
+        resolve_column_indices(p->where, table);
     }
 
     btree_t* tree = (btree_t*)table->data_tree;
@@ -1052,7 +1307,7 @@ static int execute_select_init(speedsql_stmt* stmt) {
         }
     }
 
-    /* Initialize cursor for table scan */
+    /* Initialize cursor for table scan or index scan */
     if (p->table_count > 0) {
         table_def_t* table = find_table(stmt->db, p->tables[0].name);
         if (!table) {
@@ -1060,16 +1315,30 @@ static int execute_select_init(speedsql_stmt* stmt) {
             return SPEEDSQL_ERROR;
         }
 
+        /* Store table reference for SELECT */
+        p->tables[0].def = table;
+
         if (table->data_tree) {
-            /* Create plan node for scan */
-            stmt->plan = (plan_node_t*)sdb_calloc(1, sizeof(plan_node_t));
-            if (!stmt->plan) return SPEEDSQL_NOMEM;
+            /* Try to use an index scan if WHERE clause allows */
+            expr_t* remaining_where = nullptr;
+            plan_node_t* index_plan = try_build_index_scan(stmt->db, table, p->where, &remaining_where);
 
-            stmt->plan->type = PLAN_SCAN;
-            stmt->plan->data.scan.table = table;
+            if (index_plan) {
+                /* Use index scan */
+                stmt->plan = index_plan;
+                /* Note: remaining_where could be used for additional filtering */
+                /* For now, the index handles the full condition */
+            } else {
+                /* Fall back to full table scan */
+                stmt->plan = (plan_node_t*)sdb_calloc(1, sizeof(plan_node_t));
+                if (!stmt->plan) return SPEEDSQL_NOMEM;
 
-            btree_cursor_init(&stmt->plan->data.scan.cursor, (btree_t*)table->data_tree);
-            btree_cursor_first(&stmt->plan->data.scan.cursor);
+                stmt->plan->type = PLAN_SCAN;
+                stmt->plan->data.scan.table = table;
+
+                btree_cursor_init(&stmt->plan->data.scan.cursor, (btree_t*)table->data_tree);
+                btree_cursor_first(&stmt->plan->data.scan.cursor);
+            }
         }
     }
 
@@ -1706,6 +1975,104 @@ static int execute_select_step(speedsql_stmt* stmt) {
         return SPEEDSQL_ROW;
     }
 
+
+    /* Handle index scan - lookup row by rowid from index */
+    if (stmt->plan->type == PLAN_INDEX_SCAN) {
+        btree_cursor_t* idx_cursor = &stmt->plan->data.index_scan.cursor;
+        table_def_t* table = stmt->plan->data.index_scan.table;
+
+        while (idx_cursor->valid && !idx_cursor->at_end) {
+            /* Get rowid from index value */
+            value_t idx_key, rowid;
+            value_init_null(&idx_key);
+            value_init_null(&rowid);
+
+            btree_cursor_key(idx_cursor, &idx_key);
+            btree_cursor_value(idx_cursor, &rowid);
+
+            /* Check if we're still within the search range (for equality, just one row) */
+            value_t* end_key = stmt->plan->data.index_scan.end_key;
+            if (end_key) {
+                int cmp = value_compare(&idx_key, end_key);
+                if (cmp > 0) {
+                    /* Past end of range */
+                    value_free(&idx_key);
+                    value_free(&rowid);
+                    idx_cursor->valid = false;
+                    break;
+                }
+            }
+
+            /* Lookup actual row in table using rowid */
+            if (table && table->data_tree) {
+                value_t row_data;
+                value_init_null(&row_data);
+
+                int rc = btree_find((btree_t*)table->data_tree, &rowid, &row_data);
+                if (rc == SPEEDSQL_OK && row_data.type == VAL_BLOB && row_data.data.blob.data) {
+                    int col_count = *(int*)row_data.data.blob.data;
+                    value_t* row_vals = (value_t*)((uint8_t*)row_data.data.blob.data + sizeof(int));
+
+                    /* Resolve column indices if not done */
+                    for (int i = 0; i < p->column_count; i++) {
+                        if (p->columns[i].expr && p->columns[i].expr->type == EXPR_COLUMN) {
+                            if (p->columns[i].expr->data.column_ref.index < 0) {
+                                const char* col_name = p->columns[i].expr->data.column_ref.column;
+                                for (uint32_t c = 0; c < table->column_count; c++) {
+                                    if (strcmp(table->columns[c].name, col_name) == 0) {
+                                        p->columns[i].expr->data.column_ref.index = c;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    /* Project columns */
+                    for (int i = 0; i < stmt->column_count && i < p->column_count; i++) {
+                        value_free(&stmt->current_row[i]);
+
+                        if (p->columns[i].expr) {
+                            if (p->columns[i].expr->type == EXPR_COLUMN) {
+                                int colidx = p->columns[i].expr->data.column_ref.index;
+                                if (colidx >= 0 && colidx < col_count) {
+                                    value_copy(&stmt->current_row[i], &row_vals[colidx]);
+                                } else {
+                                    value_init_null(&stmt->current_row[i]);
+                                }
+                            } else {
+                                stmt->current_row = row_vals;
+                                stmt->column_count = col_count;
+                                eval_expr(stmt, p->columns[i].expr, &stmt->current_row[i]);
+                            }
+                        }
+                    }
+
+                    stmt->column_count = p->column_count;
+
+                    value_free(&idx_key);
+                    value_free(&rowid);
+                    value_free(&row_data);
+
+                    /* Advance cursor for next call */
+                    btree_cursor_next(idx_cursor);
+
+                    stmt->has_row = true;
+                    stmt->step_count++;
+                    return SPEEDSQL_ROW;
+                }
+
+                value_free(&row_data);
+            }
+
+            value_free(&idx_key);
+            value_free(&rowid);
+            btree_cursor_next(idx_cursor);
+        }
+
+        return SPEEDSQL_DONE;
+    }
+
     /* Simple table scan without buffering */
     btree_cursor_t* cursor = &stmt->plan->data.scan.cursor;
     table_def_t* table = stmt->plan->data.scan.table;
@@ -1968,15 +2335,17 @@ SPEEDSQL_API int speedsql_prepare(
     }
 
     if (!stmt->parsed) {
-        /* Empty statement */
+        /* Empty statement - convert from copied buffer position to original position */
+        size_t offset = parser.lexer.current - stmt->sql;
         stmt_free_internal(stmt);
-        if (tail) *tail = parser.lexer.current;
+        if (tail) *tail = sql + offset;
         return SPEEDSQL_OK;
     }
 
-    /* Set tail if requested */
+    /* Set tail if requested - convert from copied buffer position to original position */
     if (tail) {
-        *tail = parser.lexer.current;
+        size_t offset = parser.lexer.current - stmt->sql;
+        *tail = sql + offset;
     }
 
     /* Count parameters by walking the AST */
@@ -2084,6 +2453,27 @@ SPEEDSQL_API int speedsql_step(speedsql_stmt* stmt) {
             if (!stmt->executed) {
                 stmt->executed = true;
                 return speedsql_rollback(stmt->db);
+            }
+            return SPEEDSQL_DONE;
+
+        case SQL_SAVEPOINT:
+            if (!stmt->executed) {
+                stmt->executed = true;
+                return speedsql_savepoint(stmt->db, stmt->parsed->savepoint_name);
+            }
+            return SPEEDSQL_DONE;
+
+        case SQL_RELEASE:
+            if (!stmt->executed) {
+                stmt->executed = true;
+                return speedsql_release(stmt->db, stmt->parsed->savepoint_name);
+            }
+            return SPEEDSQL_DONE;
+
+        case SQL_ROLLBACK_TO:
+            if (!stmt->executed) {
+                stmt->executed = true;
+                return speedsql_rollback_to(stmt->db, stmt->parsed->savepoint_name);
             }
             return SPEEDSQL_DONE;
 

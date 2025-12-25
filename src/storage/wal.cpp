@@ -34,7 +34,10 @@ typedef enum {
     WAL_RECORD_COMMIT = 2,
     WAL_RECORD_ROLLBACK = 3,
     WAL_RECORD_PAGE = 4,
-    WAL_RECORD_CHECKPOINT = 5
+    WAL_RECORD_CHECKPOINT = 5,
+    WAL_RECORD_SAVEPOINT = 6,
+    WAL_RECORD_RELEASE = 7,
+    WAL_RECORD_ROLLBACK_TO = 8
 } wal_record_type_t;
 
 /* WAL file header */
@@ -351,6 +354,79 @@ int wal_rollback(wal_t* wal, txn_id_t txn) {
     hdr.lsn = wal->current_lsn++;
     hdr.txn_id = txn;
     hdr.type = WAL_RECORD_ROLLBACK;
+    hdr.page_id = INVALID_PAGE_ID;
+    hdr.data_len = 0;
+
+    int rc = wal_append_record(wal, &hdr, nullptr, nullptr, 0);
+    if (rc != SPEEDSQL_OK) {
+        mutex_unlock(&wal->lock);
+        return rc;
+    }
+
+    rc = wal_flush_buffer(wal);
+
+    mutex_unlock(&wal->lock);
+    return rc;
+}
+
+int wal_savepoint(wal_t* wal, txn_id_t txn, uint64_t* lsn_out) {
+    if (!wal) return SPEEDSQL_MISUSE;
+
+    mutex_lock(&wal->lock);
+
+    /* Create savepoint record */
+    wal_record_header_t hdr = {0};
+    hdr.lsn = wal->current_lsn++;
+    hdr.txn_id = txn;
+    hdr.type = WAL_RECORD_SAVEPOINT;
+    hdr.page_id = INVALID_PAGE_ID;
+    hdr.data_len = 0;
+
+    if (lsn_out) {
+        *lsn_out = hdr.lsn;
+    }
+
+    int rc = wal_append_record(wal, &hdr, nullptr, nullptr, 0);
+    if (rc != SPEEDSQL_OK) {
+        mutex_unlock(&wal->lock);
+        return rc;
+    }
+
+    rc = wal_flush_buffer(wal);
+
+    mutex_unlock(&wal->lock);
+    return rc;
+}
+
+int wal_release_savepoint(wal_t* wal, txn_id_t txn) {
+    if (!wal) return SPEEDSQL_MISUSE;
+
+    mutex_lock(&wal->lock);
+
+    /* Create release record */
+    wal_record_header_t hdr = {0};
+    hdr.lsn = wal->current_lsn++;
+    hdr.txn_id = txn;
+    hdr.type = WAL_RECORD_RELEASE;
+    hdr.page_id = INVALID_PAGE_ID;
+    hdr.data_len = 0;
+
+    int rc = wal_append_record(wal, &hdr, nullptr, nullptr, 0);
+
+    mutex_unlock(&wal->lock);
+    return rc;
+}
+
+int wal_rollback_to_savepoint(wal_t* wal, txn_id_t txn, uint64_t savepoint_lsn) {
+    if (!wal) return SPEEDSQL_MISUSE;
+
+    mutex_lock(&wal->lock);
+
+    /* Create rollback to savepoint record */
+    wal_record_header_t hdr = {0};
+    hdr.lsn = wal->current_lsn++;
+    hdr.txn_id = txn;
+    hdr.type = WAL_RECORD_ROLLBACK_TO;
     hdr.page_id = INVALID_PAGE_ID;
     hdr.data_len = 0;
 

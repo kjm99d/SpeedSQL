@@ -103,6 +103,11 @@ typedef struct {
     uint64_t hits;               /* Cache hits */
     uint64_t misses;             /* Cache misses */
     mutex_t lock;                /* Pool lock */
+
+    /* Encryption support */
+    struct speedsql_cipher_ctx* cipher_ctx; /* Cipher context (if encrypted) */
+    speedsql_cipher_t cipher_id;            /* Current cipher algorithm */
+    uint8_t* crypt_buffer;                  /* Temporary buffer for encrypt/decrypt */
 } buffer_pool_t;
 
 int buffer_pool_init(buffer_pool_t* pool, size_t cache_size, uint32_t page_size);
@@ -112,6 +117,7 @@ void buffer_pool_unpin(buffer_pool_t* pool, buffer_page_t* page, bool dirty);
 int buffer_pool_flush(buffer_pool_t* pool, file_t* file);
 buffer_page_t* buffer_pool_new_page(buffer_pool_t* pool, file_t* file, page_id_t* page_id);
 int buffer_pool_invalidate_dirty(buffer_pool_t* pool, file_t* file);
+int buffer_pool_set_encryption(buffer_pool_t* pool, struct speedsql_cipher_ctx* ctx, speedsql_cipher_t cipher_id);
 
 /* ============================================================================
  * B+Tree Index
@@ -174,6 +180,9 @@ int wal_commit(wal_t* wal, txn_id_t txn);
 int wal_rollback(wal_t* wal, txn_id_t txn);
 int wal_checkpoint(wal_t* wal, buffer_pool_t* pool, file_t* db_file);
 int wal_recover(wal_t* wal, buffer_pool_t* pool, file_t* db_file);
+int wal_savepoint(wal_t* wal, txn_id_t txn, uint64_t* lsn_out);
+int wal_release_savepoint(wal_t* wal, txn_id_t txn);
+int wal_rollback_to_savepoint(wal_t* wal, txn_id_t txn, uint64_t savepoint_lsn);
 
 /* ============================================================================
  * Database Connection Structure
@@ -198,6 +207,15 @@ struct speedsql {
     /* Transaction state */
     txn_id_t current_txn;
     txn_state_t txn_state;
+
+    /* Savepoint stack */
+    struct savepoint_entry {
+        char name[64];               /* Savepoint name */
+        uint64_t wal_lsn;            /* WAL LSN at savepoint */
+        int64_t last_rowid_saved;    /* Last rowid at savepoint */
+        uint64_t total_changes_saved;/* Total changes at savepoint */
+    } savepoints[32];                /* Max 32 nested savepoints */
+    int savepoint_count;             /* Current savepoint count */
 
     /* Error state */
     int errcode;
@@ -237,7 +255,10 @@ typedef enum {
     SQL_DROP_INDEX,
     SQL_BEGIN,
     SQL_COMMIT,
-    SQL_ROLLBACK
+    SQL_ROLLBACK,
+    SQL_SAVEPOINT,
+    SQL_RELEASE,
+    SQL_ROLLBACK_TO
 } sql_op_t;
 
 /* Expression node types */
@@ -352,6 +373,9 @@ typedef struct {
 
     /* CREATE INDEX */
     index_def_t* new_index;
+
+    /* SAVEPOINT / RELEASE / ROLLBACK TO */
+    char* savepoint_name;
 } parsed_stmt_t;
 
 /* Query execution plan node types */
@@ -384,6 +408,7 @@ struct plan_node {
         } scan;
         struct {
             index_def_t* index;
+            table_def_t* table;   /* Table to lookup rows from */
             btree_cursor_t cursor;
             value_t* start_key;
             value_t* end_key;
@@ -484,6 +509,9 @@ typedef enum {
     TOK_BEGIN,
     TOK_COMMIT,
     TOK_ROLLBACK,
+    TOK_SAVEPOINT,
+    TOK_RELEASE,
+    TOK_TO,
     TOK_TRANSACTION,
     TOK_GROUP,
     TOK_HAVING,

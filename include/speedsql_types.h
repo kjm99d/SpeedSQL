@@ -143,6 +143,7 @@ typedef struct {
     uint32_t column_count;       /* Number of columns in index */
     uint32_t* column_indices;    /* Column indices */
     page_id_t root_page;         /* Root page of B+tree */
+    struct btree* index_tree;    /* In-memory B+tree handle */
     uint8_t flags;               /* UNIQUE, etc. */
 } index_def_t;
 

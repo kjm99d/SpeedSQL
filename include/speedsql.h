@@ -178,6 +178,11 @@ SPEEDSQL_API int speedsql_begin(speedsql* db);
 SPEEDSQL_API int speedsql_commit(speedsql* db);
 SPEEDSQL_API int speedsql_rollback(speedsql* db);
 
+/* Savepoint support for nested transactions */
+SPEEDSQL_API int speedsql_savepoint(speedsql* db, const char* name);
+SPEEDSQL_API int speedsql_release(speedsql* db, const char* name);
+SPEEDSQL_API int speedsql_rollback_to(speedsql* db, const char* name);
+
 /* ============================================================================
  * Utility API
  * ============================================================================ */

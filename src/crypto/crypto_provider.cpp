@@ -432,6 +432,14 @@ SPEEDSQL_API int speedsql_key_v2(
     db->cipher_id = config->cipher;
     db->encrypted = true;
 
+    /* Set encryption on buffer pool for page-level encryption */
+    if (db->buffer_pool) {
+        rc = buffer_pool_set_encryption(db->buffer_pool, db->cipher_ctx, db->cipher_id);
+        if (rc != SPEEDSQL_OK) {
+            return rc;
+        }
+    }
+
     return SPEEDSQL_OK;
 }
 

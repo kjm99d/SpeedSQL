@@ -53,9 +53,6 @@ cmake ..
 
 # Build
 cmake --build . --config Release
-
-# Run tests
-ctest -C Release
 ```
 
 ### Build Options
@@ -67,6 +64,219 @@ cmake .. \
     -DSPEEDSQL_BUILD_TESTS=ON \
     -DSPEEDSQL_BUILD_EXAMPLES=ON \
     -DSPEEDSQL_BUILD_BENCHMARK=OFF
+```
+
+## Testing
+
+SpeedSQL includes a comprehensive test suite covering core functionality, SQL parsing, database operations, encryption, and v1.0 integration features.
+
+### Test Categories
+
+| Category | Tests | Description |
+|----------|-------|-------------|
+| Value Tests | 7 | Data type operations (null, int, float, text, copy, compare) |
+| Hash Tests | 2 | CRC32, xxHash64 hash functions |
+| Lexer Tests | 4 | SQL tokenization (keywords, strings, numbers, operators) |
+| Parser Tests | 13 | SQL parsing (SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, BEGIN) |
+| Database API Tests | 5 | Core API (open/close, exec, prepared statements, transactions) |
+| Savepoint Tests | 2 | Transaction savepoints (API and SQL syntax) |
+| Index Tests | 3 | CREATE INDEX, UNIQUE INDEX, DROP INDEX |
+| Encryption Tests | 3 | Crypto status, key setting, cipher configuration |
+| V1.0 Integration Tests | 9 | UPDATE/DELETE WHERE, ORDER BY, LIMIT, aggregates, JOIN, DROP TABLE |
+
+**Total: 46 tests**
+
+### Running Tests
+
+#### Windows (CMake + Ninja/MinGW)
+
+```bash
+# Navigate to project directory
+cd D:\Projects\SpeedDB
+
+# Clean build and configure
+rm -rf build
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+
+# Build with Ninja (default on Windows with MinGW)
+ninja
+
+# Run test executable
+./bin/speedsql_test.exe
+```
+
+#### Windows (CMake + Visual Studio)
+
+```bash
+# Configure with Visual Studio generator
+cmake .. -G "Visual Studio 17 2022" -A x64
+
+# Build
+cmake --build . --config Release
+
+# Run tests
+.\Release\speedsql_test.exe
+# or use CTest
+ctest -C Release --output-on-failure
+```
+
+#### Linux / WSL
+
+```bash
+# Navigate to project directory
+cd /path/to/SpeedDB
+
+# Option 1: Using CMake
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+./bin/speedsql_test
+
+# Option 2: Direct compilation (quick testing)
+g++ -std=c++17 -O2 -I include -o test_linux \
+    tests/test_main.cpp \
+    src/util/hash.cpp \
+    src/util/value.cpp \
+    src/storage/file_io.cpp \
+    src/storage/buffer_pool.cpp \
+    src/storage/wal.cpp \
+    src/index/btree.cpp \
+    src/sql/lexer.cpp \
+    src/sql/parser.cpp \
+    src/core/database.cpp \
+    src/core/executor.cpp \
+    src/crypto/crypto_provider.cpp \
+    src/crypto/cipher_none.cpp \
+    src/crypto/cipher_aes.cpp \
+    src/crypto/cipher_aria.cpp \
+    src/crypto/cipher_seed.cpp \
+    src/crypto/cipher_chacha20.cpp \
+    -lpthread
+
+./test_linux
+```
+
+#### macOS
+
+```bash
+# Using CMake
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(sysctl -n hw.ncpu)
+./bin/speedsql_test
+```
+
+### Expected Output
+
+```
+SpeedSQL Test Suite
+===================
+
+Value Tests:
+Running value_null... PASSED
+Running value_int... PASSED
+Running value_float... PASSED
+Running value_text... PASSED
+Running value_copy... PASSED
+Running value_compare_int... PASSED
+Running value_compare_text... PASSED
+
+Hash Tests:
+Running crc32_basic... PASSED
+Running xxhash64_basic... PASSED
+
+Lexer Tests:
+Running lexer_select... PASSED
+Running lexer_string... PASSED
+Running lexer_numbers... PASSED
+Running lexer_operators... PASSED
+
+Parser Tests:
+Running parser_select_simple... PASSED
+Running parser_select_columns... PASSED
+Running parser_select_where... PASSED
+Running parser_insert... PASSED
+Running parser_update... PASSED
+Running parser_delete... PASSED
+Running parser_create_table... PASSED
+Running parser_create_index... PASSED
+Running parser_create_unique_index... PASSED
+Running parser_begin... PASSED
+Running parser_drop_table... PASSED
+
+Database API Tests:
+Running db_open_close... PASSED
+Running db_exec_create_table... PASSED
+Running db_exec_insert_select... PASSED
+Running db_prepared_stmt... PASSED
+Running db_transaction... PASSED
+
+Savepoint Tests:
+Running savepoint_api_basic... PASSED
+Running savepoint_sql_syntax... PASSED
+
+Index Tests:
+Running index_create... PASSED
+Running index_unique... PASSED
+Running index_drop... PASSED
+
+Encryption Tests:
+Running crypto_status... PASSED
+Running crypto_key_set... PASSED
+Running crypto_v2_api... PASSED
+
+V1.0 Integration Tests:
+Running integration_update_where... PASSED
+Running integration_delete_where... PASSED
+Running integration_order_by... PASSED
+Running integration_limit_offset... PASSED
+Running integration_aggregates... PASSED
+Running integration_join... PASSED
+Running integration_drop_table... PASSED
+Running integration_transaction_commit... PASSED
+Running integration_transaction_rollback... PASSED
+
+===================
+Results: 46 passed, 0 failed
+```
+
+### Cross-Platform Verification
+
+SpeedSQL is tested on both Windows and Linux to ensure cross-platform compatibility:
+
+| Platform | Compiler | Status |
+|----------|----------|--------|
+| Windows 10/11 | MinGW GCC 15.2 | ✅ 46/46 passed |
+| Windows 10/11 | MSVC 2022 | ✅ Supported |
+| Linux (Ubuntu/WSL) | GCC 11+ | ✅ 46/46 passed |
+| macOS | Clang 14+ | ✅ Supported |
+
+### Troubleshooting
+
+#### CMake not found (Linux/WSL)
+```bash
+sudo apt-get update
+sudo apt-get install cmake build-essential
+```
+
+#### Ninja not found (Windows)
+```bash
+# Install via winget
+winget install Ninja-build.Ninja
+
+# Or use MSYS2
+pacman -S mingw-w64-x86_64-ninja
+```
+
+#### Build fails with C++17 errors
+Ensure your compiler supports C++17:
+```bash
+# Check GCC version (need 8+)
+g++ --version
+
+# Check Clang version (need 10+)
+clang++ --version
 ```
 
 ## Usage
@@ -196,6 +406,145 @@ int main() {
 
 ## Architecture
 
+### System Overview
+
+```mermaid
+graph TB
+    subgraph "Application Layer"
+        APP[Application]
+        CAPI[C API<br/>speedsql.h]
+        CPPAPI[C++ Wrapper<br/>speedsql.hpp]
+    end
+
+    subgraph "SQL Processing"
+        LEXER[Lexer<br/>Tokenization]
+        PARSER[Parser<br/>AST Generation]
+        EXEC[Executor<br/>Query Execution]
+    end
+
+    subgraph "Storage Engine"
+        BTREE[B+Tree Index]
+        BUFPOOL[Buffer Pool<br/>LRU Cache]
+        WAL[Write-Ahead Log]
+        FILEIO[File I/O<br/>Cross-platform]
+    end
+
+    subgraph "Security Layer"
+        CRYPTO[Crypto Provider]
+        AES[AES-256]
+        ARIA[ARIA-256]
+        CHACHA[ChaCha20]
+        SEED[SEED]
+    end
+
+    APP --> CAPI
+    APP --> CPPAPI
+    CPPAPI --> CAPI
+    CAPI --> LEXER
+    LEXER --> PARSER
+    PARSER --> EXEC
+    EXEC --> BTREE
+    BTREE --> BUFPOOL
+    BUFPOOL --> CRYPTO
+    BUFPOOL --> WAL
+    CRYPTO --> AES
+    CRYPTO --> ARIA
+    CRYPTO --> CHACHA
+    CRYPTO --> SEED
+    WAL --> FILEIO
+    BUFPOOL --> FILEIO
+```
+
+### Query Execution Flow
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant API as C API
+    participant Parser as SQL Parser
+    participant Exec as Executor
+    participant BTree as B+Tree
+    participant Pool as Buffer Pool
+    participant File as File I/O
+
+    App->>API: speedsql_exec("SELECT * FROM users")
+    API->>Parser: Parse SQL
+    Parser-->>API: AST (parsed_stmt_t)
+    API->>Exec: Execute Query
+
+    loop For each row
+        Exec->>BTree: Cursor Next
+        BTree->>Pool: Get Page
+        Pool->>File: Read (if not cached)
+        File-->>Pool: Page Data
+        Pool-->>BTree: Buffer Page
+        BTree-->>Exec: Row Data
+        Exec-->>API: SPEEDSQL_ROW
+        API-->>App: Row Available
+    end
+
+    Exec-->>API: SPEEDSQL_DONE
+    API-->>App: Query Complete
+```
+
+### Transaction & WAL Flow
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant DB as Database
+    participant WAL as Write-Ahead Log
+    participant Pool as Buffer Pool
+    participant File as Data File
+
+    App->>DB: speedsql_begin()
+    DB->>DB: txn_state = TXN_READ
+
+    App->>DB: INSERT/UPDATE/DELETE
+    DB->>WAL: Write Log Record
+    DB->>Pool: Modify Page (in memory)
+    Pool->>Pool: Mark Page Dirty
+
+    alt Commit
+        App->>DB: speedsql_commit()
+        DB->>WAL: Write COMMIT Record
+        DB->>WAL: fsync()
+        DB->>Pool: Flush Dirty Pages
+        Pool->>File: Write Pages
+    else Rollback
+        App->>DB: speedsql_rollback()
+        DB->>WAL: Write ROLLBACK Record
+        DB->>Pool: Discard Dirty Pages
+    end
+```
+
+### Page Encryption Flow
+
+```mermaid
+flowchart LR
+    subgraph "Write Path"
+        A1[Plain Page] --> B1[Encrypt]
+        B1 --> C1[Add Auth Tag]
+        C1 --> D1[Write to Disk]
+    end
+
+    subgraph "Read Path"
+        A2[Read from Disk] --> B2[Verify Tag]
+        B2 --> C2[Decrypt]
+        C2 --> D2[Plain Page]
+    end
+
+    subgraph "Cipher Selection"
+        CS[Crypto Provider]
+        CS --> AES[AES-256-GCM]
+        CS --> ARIA[ARIA-256-GCM]
+        CS --> CHACHA[ChaCha20-Poly1305]
+        CS --> SEED[SEED-CBC+HMAC]
+    end
+```
+
+### Directory Structure
+
 ```
 SpeedSQL/
 ├── include/
@@ -206,15 +555,17 @@ SpeedSQL/
 │   └── speedsql_internal.h  # Internal structures
 ├── src/
 │   ├── core/
-│   │   └── database.cpp    # Connection management
+│   │   ├── database.cpp     # Connection management
+│   │   └── executor.cpp     # Query executor
 │   ├── storage/
-│   │   ├── file_io.cpp     # Cross-platform file I/O
-│   │   └── buffer_pool.cpp # Page cache (LRU)
+│   │   ├── file_io.cpp      # Cross-platform file I/O
+│   │   ├── buffer_pool.cpp  # Page cache (LRU)
+│   │   └── wal.cpp          # Write-ahead logging
 │   ├── index/
-│   │   └── btree.cpp       # B+Tree implementation
+│   │   └── btree.cpp        # B+Tree implementation
 │   ├── sql/
-│   │   ├── lexer.cpp       # SQL tokenizer
-│   │   └── parser.cpp      # SQL parser
+│   │   ├── lexer.cpp        # SQL tokenizer
+│   │   └── parser.cpp       # SQL parser
 │   ├── crypto/
 │   │   ├── crypto_provider.cpp  # Cipher registry
 │   │   ├── cipher_none.cpp      # No encryption
@@ -223,10 +574,14 @@ SpeedSQL/
 │   │   ├── cipher_seed.cpp      # SEED (Korean)
 │   │   └── cipher_chacha20.cpp  # ChaCha20-Poly1305
 │   └── util/
-│       ├── hash.cpp        # CRC32, xxHash64
-│       └── value.cpp       # Value operations
+│       ├── hash.cpp         # CRC32, xxHash64
+│       └── value.cpp        # Value operations
 ├── tests/
+│   └── test_main.cpp        # Test suite (46 tests)
 ├── examples/
+│   ├── basic_usage.cpp
+│   ├── encryption_example.cpp
+│   └── cpp_wrapper_example.cpp
 └── benchmark/
 ```
 
@@ -274,9 +629,9 @@ SpeedSQL/
 - [x] GROUP BY / HAVING clause parsing
 - [x] JOIN support (INNER, LEFT, RIGHT, CROSS)
 - [x] Schema persistence for file-based databases
-- [ ] Full transaction support (nested transactions, savepoints)
-- [ ] Page-level encryption integration
-- [ ] Secondary index execution (index scan)
+- [x] Full transaction support (nested transactions, savepoints)
+- [x] Page-level encryption integration
+- [x] Secondary index execution (index scan)
 
 ### v2.0
 - [ ] Query optimizer (cost-based)

@@ -6,6 +6,17 @@
  */
 
 #include "speedsql_internal.h"
+#include "speedsql_crypto.h"
+
+/* Forward declarations for encryption functions */
+static int encrypt_page(buffer_pool_t* pool, page_id_t page_id,
+                        const uint8_t* plaintext, uint8_t* ciphertext);
+static int decrypt_page(buffer_pool_t* pool, page_id_t page_id,
+                        const uint8_t* ciphertext, uint8_t* plaintext);
+static int read_page_encrypted(buffer_pool_t* pool, file_t* file,
+                               page_id_t page_id, uint8_t* data);
+static int write_page_encrypted(buffer_pool_t* pool, file_t* file,
+                                page_id_t page_id, const uint8_t* data);
 
 /* Hash function for page IDs */
 static inline size_t page_hash(page_id_t page_id, size_t size) {
@@ -102,6 +113,12 @@ void buffer_pool_destroy(buffer_pool_t* pool) {
         sdb_free(pool->hash_table);
     }
 
+    /* Free encryption buffer if allocated */
+    if (pool->crypt_buffer) {
+        sdb_free(pool->crypt_buffer);
+        pool->crypt_buffer = nullptr;
+    }
+
     mutex_destroy(&pool->lock);
 }
 
@@ -196,8 +213,7 @@ static buffer_page_t* get_victim(buffer_pool_t* pool, file_t* file) {
 
             /* Write back if dirty */
             if (page->state == BUF_DIRTY && file) {
-                file_write(file, page->page_id * pool->page_size,
-                          page->data, pool->page_size);
+                write_page_encrypted(pool, file, page->page_id, page->data);
             }
 
             pool->used_count--;
@@ -243,9 +259,9 @@ buffer_page_t* buffer_pool_get(buffer_pool_t* pool, file_t* file, page_id_t page
         return nullptr;  /* No pages available */
     }
 
-    /* Read page from disk */
+    /* Read page from disk (with decryption if enabled) */
     page->page_id = page_id;
-    int rc = file_read(file, page_id * pool->page_size, page->data, pool->page_size);
+    int rc = read_page_encrypted(pool, file, page_id, page->data);
     if (rc != SPEEDSQL_OK) {
         /* Read failed - put page back on free list */
         page->page_id = INVALID_PAGE_ID;
@@ -299,8 +315,7 @@ int buffer_pool_flush(buffer_pool_t* pool, file_t* file) {
         buffer_page_t* page = pool->hash_table[i];
         while (page) {
             if (page->state == BUF_DIRTY) {
-                rc = file_write(file, page->page_id * pool->page_size,
-                               page->data, pool->page_size);
+                rc = write_page_encrypted(pool, file, page->page_id, page->data);
                 if (rc == SPEEDSQL_OK) {
                     page->state = BUF_CLEAN;
                 }
@@ -341,8 +356,8 @@ buffer_page_t* buffer_pool_new_page(buffer_pool_t* pool, file_t* file, page_id_t
     page->pin_count = 1;
     page->last_access = get_timestamp_us();
 
-    /* Extend file */
-    int rc = file_write(file, new_page_id * pool->page_size, page->data, pool->page_size);
+    /* Extend file (with encryption if enabled) */
+    int rc = write_page_encrypted(pool, file, new_page_id, page->data);
     if (rc != SPEEDSQL_OK) {
         page->page_id = INVALID_PAGE_ID;
         page->state = BUF_INVALID;
@@ -423,4 +438,174 @@ int buffer_pool_invalidate_dirty(buffer_pool_t* pool, file_t* file) {
 
     mutex_unlock(&pool->lock);
     return SPEEDSQL_OK;
+}
+
+/* ============================================================================
+ * Page-Level Encryption Support
+ * ============================================================================ */
+
+int buffer_pool_set_encryption(buffer_pool_t* pool, struct speedsql_cipher_ctx* ctx, speedsql_cipher_t cipher_id) {
+    if (!pool) return SPEEDSQL_MISUSE;
+
+    mutex_lock(&pool->lock);
+
+    pool->cipher_ctx = ctx;
+    pool->cipher_id = cipher_id;
+
+    /* Allocate encryption buffer if needed */
+    if (ctx && !pool->crypt_buffer) {
+        /* Allocate buffer for encryption: page + IV + tag */
+        pool->crypt_buffer = (uint8_t*)sdb_malloc(pool->page_size + 32 + 16);
+        if (!pool->crypt_buffer) {
+            mutex_unlock(&pool->lock);
+            return SPEEDSQL_NOMEM;
+        }
+    }
+
+    mutex_unlock(&pool->lock);
+    return SPEEDSQL_OK;
+}
+
+/* Encrypt a page before writing to disk */
+static int encrypt_page(buffer_pool_t* pool, page_id_t page_id,
+                        const uint8_t* plaintext, uint8_t* ciphertext) {
+    if (!pool->cipher_ctx) {
+        /* No encryption - just copy */
+        memcpy(ciphertext, plaintext, pool->page_size);
+        return SPEEDSQL_OK;
+    }
+
+    const speedsql_cipher_provider_t* provider = speedsql_get_cipher(pool->cipher_id);
+    if (!provider || !provider->encrypt) {
+        return SPEEDSQL_ERROR;
+    }
+
+    /* Generate IV from page ID (deterministic for same page, ensures unique IV) */
+    uint8_t iv[24] = {0};  /* Max IV size */
+    uint64_t page_id_64 = page_id;
+    memcpy(iv, &page_id_64, sizeof(page_id_64));
+    /* Add some entropy to the IV */
+    iv[8] = 0x53;  /* 'S' for SpeedSQL */
+    iv[9] = 0x51;  /* 'Q' */
+    iv[10] = 0x4C; /* 'L' */
+
+    /* AAD (Additional Authenticated Data): page ID for integrity */
+    uint8_t aad[8];
+    memcpy(aad, &page_id_64, sizeof(aad));
+
+    /* Encrypt the page */
+    uint8_t tag[16];
+    int rc = provider->encrypt(
+        pool->cipher_ctx,
+        plaintext,
+        pool->page_size,
+        iv,
+        aad,
+        sizeof(aad),
+        ciphertext,
+        tag
+    );
+
+    if (rc != SPEEDSQL_OK) {
+        return rc;
+    }
+
+    /* Append tag to ciphertext (for authenticated ciphers) */
+    if (provider->tag_size > 0) {
+        memcpy(ciphertext + pool->page_size, tag, provider->tag_size);
+    }
+
+    return SPEEDSQL_OK;
+}
+
+/* Decrypt a page after reading from disk */
+static int decrypt_page(buffer_pool_t* pool, page_id_t page_id,
+                        const uint8_t* ciphertext, uint8_t* plaintext) {
+    if (!pool->cipher_ctx) {
+        /* No encryption - just copy */
+        memcpy(plaintext, ciphertext, pool->page_size);
+        return SPEEDSQL_OK;
+    }
+
+    const speedsql_cipher_provider_t* provider = speedsql_get_cipher(pool->cipher_id);
+    if (!provider || !provider->decrypt) {
+        return SPEEDSQL_ERROR;
+    }
+
+    /* Reconstruct IV from page ID */
+    uint8_t iv[24] = {0};
+    uint64_t page_id_64 = page_id;
+    memcpy(iv, &page_id_64, sizeof(page_id_64));
+    iv[8] = 0x53;
+    iv[9] = 0x51;
+    iv[10] = 0x4C;
+
+    /* AAD: page ID */
+    uint8_t aad[8];
+    memcpy(aad, &page_id_64, sizeof(aad));
+
+    /* Get tag from after ciphertext */
+    const uint8_t* tag = ciphertext + pool->page_size;
+
+    /* Decrypt the page */
+    int rc = provider->decrypt(
+        pool->cipher_ctx,
+        ciphertext,
+        pool->page_size,
+        iv,
+        aad,
+        sizeof(aad),
+        tag,
+        plaintext
+    );
+
+    return rc;
+}
+
+/* Read page from disk with decryption */
+static int read_page_encrypted(buffer_pool_t* pool, file_t* file,
+                               page_id_t page_id, uint8_t* data) {
+    if (!pool->cipher_ctx) {
+        /* No encryption - direct read */
+        return file_read(file, page_id * pool->page_size, data, pool->page_size);
+    }
+
+    const speedsql_cipher_provider_t* provider = speedsql_get_cipher(pool->cipher_id);
+    size_t encrypted_size = pool->page_size;
+    if (provider && provider->tag_size > 0) {
+        encrypted_size += provider->tag_size;
+    }
+
+    /* Read encrypted page into temp buffer */
+    int rc = file_read(file, page_id * encrypted_size, pool->crypt_buffer, encrypted_size);
+    if (rc != SPEEDSQL_OK) {
+        return rc;
+    }
+
+    /* Decrypt into destination */
+    return decrypt_page(pool, page_id, pool->crypt_buffer, data);
+}
+
+/* Write page to disk with encryption */
+static int write_page_encrypted(buffer_pool_t* pool, file_t* file,
+                                page_id_t page_id, const uint8_t* data) {
+    if (!pool->cipher_ctx) {
+        /* No encryption - direct write */
+        return file_write(file, page_id * pool->page_size, data, pool->page_size);
+    }
+
+    const speedsql_cipher_provider_t* provider = speedsql_get_cipher(pool->cipher_id);
+    size_t encrypted_size = pool->page_size;
+    if (provider && provider->tag_size > 0) {
+        encrypted_size += provider->tag_size;
+    }
+
+    /* Encrypt into temp buffer */
+    int rc = encrypt_page(pool, page_id, data, pool->crypt_buffer);
+    if (rc != SPEEDSQL_OK) {
+        return rc;
+    }
+
+    /* Write encrypted page */
+    return file_write(file, page_id * encrypted_size, pool->crypt_buffer, encrypted_size);
 }
