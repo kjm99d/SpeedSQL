@@ -1,5 +1,10 @@
 # SpeedSQL
 
+[![Build Status](https://github.com/kjm99d/SpeedSQL/actions/workflows/cmake-multi-platform.yml/badge.svg)](https://github.com/kjm99d/SpeedSQL/actions)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![C++17](https://img.shields.io/badge/C++-17-00599C?logo=cplusplus)](https://isocpp.org/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)]()
+
 Ultra-fast file-based local database engine designed to overcome SQLite's limitations.
 
 ## Features
