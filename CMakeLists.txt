@@ -64,6 +64,7 @@ set(SPEEDDB_HEADERS
     include/speeddb_types.h
     include/speeddb_internal.h
     include/speeddb_crypto.h
+    include/speeddb.hpp
 )
 
 # Include directories
@@ -132,6 +133,13 @@ if(SPEEDDB_BUILD_EXAMPLES)
     add_executable(speeddb_custom_cipher examples/custom_cipher_example.cpp)
     target_link_libraries(speeddb_custom_cipher PRIVATE speeddb_static)
     set_target_properties(speeddb_custom_cipher PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+
+    # C++ wrapper example
+    add_executable(speeddb_cpp_example examples/cpp_wrapper_example.cpp)
+    target_link_libraries(speeddb_cpp_example PRIVATE speeddb_static)
+    set_target_properties(speeddb_cpp_example PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
 endif()
