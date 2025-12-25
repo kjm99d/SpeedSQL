@@ -8,6 +8,7 @@
 
 #include "speedsql.h"
 #include "speedsql_types.h"
+#include "speedsql_crypto.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -110,6 +111,7 @@ buffer_page_t* buffer_pool_get(buffer_pool_t* pool, file_t* file, page_id_t page
 void buffer_pool_unpin(buffer_pool_t* pool, buffer_page_t* page, bool dirty);
 int buffer_pool_flush(buffer_pool_t* pool, file_t* file);
 buffer_page_t* buffer_pool_new_page(buffer_pool_t* pool, file_t* file, page_id_t* page_id);
+int buffer_pool_invalidate_dirty(buffer_pool_t* pool, file_t* file);
 
 /* ============================================================================
  * B+Tree Index
@@ -177,6 +179,9 @@ int wal_recover(wal_t* wal, buffer_pool_t* pool, file_t* db_file);
  * Database Connection Structure
  * ============================================================================ */
 
+/* Forward declare cipher context */
+struct speedsql_cipher_ctx;
+
 struct speedsql {
     file_t db_file;              /* Main database file */
     wal_t* wal;                  /* Write-ahead log */
@@ -201,6 +206,11 @@ struct speedsql {
     /* Configuration */
     uint32_t flags;
     size_t cache_size;
+
+    /* Encryption */
+    struct speedsql_cipher_ctx* cipher_ctx;  /* Cipher context */
+    speedsql_cipher_t cipher_id;             /* Current cipher */
+    bool encrypted;                          /* Is database encrypted */
 
     /* Statistics */
     uint64_t total_changes;

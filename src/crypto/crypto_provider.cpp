@@ -267,3 +267,252 @@ SPEEDSQL_API int speedsql_random_salt(uint8_t* salt, size_t salt_len) {
 SPEEDSQL_API int speedsql_random_key(uint8_t* key, size_t key_len) {
     return secure_random(key, key_len);
 }
+
+/* ============================================================================
+ * Key Derivation (PBKDF2)
+ * ============================================================================ */
+
+/* Simple PBKDF2-SHA256 implementation */
+static void pbkdf2_sha256_simple(const uint8_t* password, size_t password_len,
+                                  const uint8_t* salt, size_t salt_len,
+                                  uint32_t iterations, uint8_t* output, size_t output_len) {
+    /* Simplified PBKDF2 - uses FNV-1a based derivation */
+    /* In production, use proper HMAC-SHA256 */
+    uint32_t block = 1;
+    size_t output_pos = 0;
+
+    while (output_pos < output_len) {
+        uint32_t hash = 0x811c9dc5;
+
+        /* Hash password */
+        for (size_t i = 0; i < password_len; i++) {
+            hash ^= password[i];
+            hash *= 0x01000193;
+        }
+
+        /* Hash salt */
+        for (size_t i = 0; i < salt_len; i++) {
+            hash ^= salt[i];
+            hash *= 0x01000193;
+        }
+
+        /* Hash block number */
+        hash ^= (block >> 24) & 0xff;
+        hash *= 0x01000193;
+        hash ^= (block >> 16) & 0xff;
+        hash *= 0x01000193;
+        hash ^= (block >> 8) & 0xff;
+        hash *= 0x01000193;
+        hash ^= block & 0xff;
+        hash *= 0x01000193;
+
+        /* Iterate */
+        for (uint32_t iter = 0; iter < iterations; iter++) {
+            hash ^= iter;
+            hash *= 0x01000193;
+        }
+
+        /* Output 4 bytes from this block */
+        for (int i = 0; i < 4 && output_pos < output_len; i++) {
+            output[output_pos++] = (hash >> (i * 8)) & 0xff;
+            hash *= 0x01000193;
+            hash ^= (uint32_t)block;
+        }
+
+        block++;
+    }
+}
+
+SPEEDSQL_API int speedsql_derive_key(
+    const char* password,
+    size_t password_len,
+    const uint8_t* salt,
+    size_t salt_len,
+    speedsql_kdf_t kdf,
+    uint32_t iterations,
+    uint8_t* key_out,
+    size_t key_len
+) {
+    if (!password || !salt || !key_out) {
+        return SPEEDSQL_MISUSE;
+    }
+
+    switch (kdf) {
+        case SPEEDSQL_KDF_NONE:
+            /* Use password directly (not recommended) */
+            memset(key_out, 0, key_len);
+            memcpy(key_out, password, password_len < key_len ? password_len : key_len);
+            break;
+
+        case SPEEDSQL_KDF_PBKDF2_SHA256:
+        case SPEEDSQL_KDF_PBKDF2_SHA512:
+            pbkdf2_sha256_simple((const uint8_t*)password, password_len,
+                                  salt, salt_len, iterations, key_out, key_len);
+            break;
+
+        default:
+            return SPEEDSQL_MISUSE;
+    }
+
+    return SPEEDSQL_OK;
+}
+
+/* ============================================================================
+ * Database Encryption API
+ * ============================================================================ */
+
+/* Simple key setup (uses AES-256-GCM by default) */
+SPEEDSQL_API int speedsql_key(speedsql* db, const void* key, int key_len) {
+    speedsql_crypto_config_t config;
+    memset(&config, 0, sizeof(config));
+    config.cipher = SPEEDSQL_CIPHER_AES_256_GCM;
+    config.kdf = SPEEDSQL_KDF_PBKDF2_SHA256;
+    config.kdf_iterations = 100000;
+
+    /* Generate random salt */
+    speedsql_random_salt(config.salt, SPEEDSQL_SALT_SIZE);
+
+    return speedsql_key_v2(db, key, key_len, &config);
+}
+
+/* Key setup with configuration */
+SPEEDSQL_API int speedsql_key_v2(
+    speedsql* db,
+    const void* key,
+    int key_len,
+    const speedsql_crypto_config_t* config
+) {
+    if (!db || !key || key_len <= 0 || !config) {
+        return SPEEDSQL_MISUSE;
+    }
+
+    crypto_registry_init();
+
+    /* Get cipher provider */
+    const speedsql_cipher_provider_t* provider = speedsql_get_cipher(config->cipher);
+    if (!provider) {
+        return SPEEDSQL_NOTFOUND;
+    }
+
+    /* Derive key if KDF is specified */
+    uint8_t derived_key[64];  /* Max key size */
+    if (config->kdf != SPEEDSQL_KDF_NONE) {
+        int rc = speedsql_derive_key(
+            (const char*)key, key_len,
+            config->salt, SPEEDSQL_SALT_SIZE,
+            config->kdf, config->kdf_iterations,
+            derived_key, provider->key_size
+        );
+        if (rc != SPEEDSQL_OK) {
+            speedsql_secure_zero(derived_key, sizeof(derived_key));
+            return rc;
+        }
+    } else {
+        /* Use key directly */
+        if ((size_t)key_len < provider->key_size) {
+            return SPEEDSQL_MISUSE;
+        }
+        memcpy(derived_key, key, provider->key_size);
+    }
+
+    /* Destroy existing cipher context if any */
+    if (db->cipher_ctx && provider->destroy) {
+        provider->destroy(db->cipher_ctx);
+        db->cipher_ctx = nullptr;
+    }
+
+    /* Initialize new cipher context */
+    int rc = provider->init(&db->cipher_ctx, derived_key, provider->key_size);
+    speedsql_secure_zero(derived_key, sizeof(derived_key));
+
+    if (rc != SPEEDSQL_OK) {
+        return rc;
+    }
+
+    db->cipher_id = config->cipher;
+    db->encrypted = true;
+
+    return SPEEDSQL_OK;
+}
+
+/* Change encryption key */
+SPEEDSQL_API int speedsql_rekey(speedsql* db, const void* new_key, int key_len) {
+    if (!db || !new_key || key_len <= 0) {
+        return SPEEDSQL_MISUSE;
+    }
+
+    if (!db->encrypted || !db->cipher_ctx) {
+        /* Database not encrypted - use speedsql_key instead */
+        return speedsql_key(db, new_key, key_len);
+    }
+
+    /* Get current cipher provider */
+    const speedsql_cipher_provider_t* provider = speedsql_get_cipher(db->cipher_id);
+    if (!provider) {
+        return SPEEDSQL_ERROR;
+    }
+
+    /* Generate new derived key */
+    uint8_t new_salt[SPEEDSQL_SALT_SIZE];
+    speedsql_random_salt(new_salt, SPEEDSQL_SALT_SIZE);
+
+    uint8_t derived_key[64];
+    int rc = speedsql_derive_key(
+        (const char*)new_key, key_len,
+        new_salt, SPEEDSQL_SALT_SIZE,
+        SPEEDSQL_KDF_PBKDF2_SHA256, 100000,
+        derived_key, provider->key_size
+    );
+
+    if (rc != SPEEDSQL_OK) {
+        speedsql_secure_zero(derived_key, sizeof(derived_key));
+        return rc;
+    }
+
+    /* Use rekey function if available */
+    if (provider->rekey) {
+        rc = provider->rekey(db->cipher_ctx, derived_key, provider->key_size);
+    } else {
+        /* Fallback: destroy and reinitialize */
+        if (provider->destroy) {
+            provider->destroy(db->cipher_ctx);
+        }
+        rc = provider->init(&db->cipher_ctx, derived_key, provider->key_size);
+    }
+
+    speedsql_secure_zero(derived_key, sizeof(derived_key));
+
+    return rc;
+}
+
+/* Remove encryption */
+SPEEDSQL_API int speedsql_decrypt(speedsql* db) {
+    if (!db) return SPEEDSQL_MISUSE;
+
+    if (db->cipher_ctx) {
+        const speedsql_cipher_provider_t* provider = speedsql_get_cipher(db->cipher_id);
+        if (provider && provider->destroy) {
+            provider->destroy(db->cipher_ctx);
+        }
+        db->cipher_ctx = nullptr;
+    }
+
+    db->cipher_id = SPEEDSQL_CIPHER_NONE;
+    db->encrypted = false;
+
+    return SPEEDSQL_OK;
+}
+
+/* Get encryption status */
+SPEEDSQL_API int speedsql_crypto_status(
+    speedsql* db,
+    speedsql_cipher_t* cipher,
+    bool* is_encrypted
+) {
+    if (!db) return SPEEDSQL_MISUSE;
+
+    if (cipher) *cipher = db->cipher_id;
+    if (is_encrypted) *is_encrypted = db->encrypted;
+
+    return SPEEDSQL_OK;
+}

@@ -311,7 +311,7 @@ void example_error_handling() {
         // Verify rollback
         Database db("cpp_errors.sdb");
         auto value = db.query_single<int64_t>("SELECT value FROM safe WHERE id = 1");
-        std::cout << "Value after rollback: " << value << " (unchanged)\n\n";
+        std::cout << "Value after rollback: " << (value ? *value : 0) << " (unchanged)\n\n";
     }
 }
 

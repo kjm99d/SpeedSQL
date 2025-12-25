@@ -368,3 +368,62 @@ buffer_page_t* buffer_pool_new_page(buffer_pool_t* pool, file_t* file, page_id_t
     mutex_unlock(&pool->lock);
     return page;
 }
+
+/* Invalidate all dirty pages (for rollback) */
+int buffer_pool_invalidate_dirty(buffer_pool_t* pool, file_t* file) {
+    if (!pool || !file) return SPEEDSQL_MISUSE;
+
+    mutex_lock(&pool->lock);
+
+    /* Iterate through all pages in hash table */
+    for (size_t i = 0; i < pool->hash_size; i++) {
+        buffer_page_t* page = pool->hash_table[i];
+        buffer_page_t* prev = nullptr;
+
+        while (page) {
+            buffer_page_t* next = page->hash_next;
+
+            if (page->state == BUF_DIRTY) {
+                /* Remove from hash table */
+                if (prev) {
+                    prev->hash_next = next;
+                } else {
+                    pool->hash_table[i] = next;
+                }
+
+                /* Remove from LRU list */
+                if (page->lru_prev) {
+                    page->lru_prev->lru_next = page->lru_next;
+                } else {
+                    pool->lru_head = page->lru_next;
+                }
+                if (page->lru_next) {
+                    page->lru_next->lru_prev = page->lru_prev;
+                } else {
+                    pool->lru_tail = page->lru_prev;
+                }
+
+                /* Reset page and add to free list */
+                page->page_id = INVALID_PAGE_ID;
+                page->state = BUF_INVALID;
+                page->pin_count = 0;
+                page->hash_next = nullptr;
+                page->lru_prev = nullptr;
+                page->lru_next = pool->free_list;
+
+                if (pool->free_list) {
+                    pool->free_list->lru_prev = page;
+                }
+                pool->free_list = page;
+                pool->used_count--;
+            } else {
+                prev = page;
+            }
+
+            page = next;
+        }
+    }
+
+    mutex_unlock(&pool->lock);
+    return SPEEDSQL_OK;
+}

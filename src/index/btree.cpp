@@ -36,6 +36,19 @@
 
 #define BTREE_LEAF_HEADER_SIZE (sizeof(page_header_t) + 2 + 8 + 8)
 #define BTREE_INTERNAL_HEADER_SIZE (sizeof(page_header_t) + 2)
+#define BTREE_MAX_DEPTH 32  /* Maximum tree depth for path tracking */
+
+/* Path entry for tracking parent nodes during insertion */
+typedef struct {
+    page_id_t page_id;
+    uint16_t slot_index;
+} btree_path_entry_t;
+
+/* Forward declarations */
+static int insert_into_internal(btree_t* tree, buffer_page_t* node,
+                                 const value_t* key, page_id_t left, page_id_t right);
+static int create_new_root(btree_t* tree, page_id_t left, page_id_t right,
+                            const value_t* separator);
 
 /* Get max keys per internal node */
 static inline uint32_t btree_internal_max_keys(uint32_t page_size, uint32_t key_size) {
@@ -256,6 +269,160 @@ static buffer_page_t* find_leaf(btree_t* tree, const value_t* key) {
     }
 }
 
+/* Find leaf page and track the path from root */
+static buffer_page_t* find_leaf_with_path(btree_t* tree, const value_t* key,
+                                           btree_path_entry_t* path, int* path_len) {
+    page_id_t page_id = tree->root_page;
+    *path_len = 0;
+
+    while (true) {
+        buffer_page_t* page = buffer_pool_get(tree->pool, tree->file, page_id);
+        if (!page) return nullptr;
+
+        page_header_t* hdr = (page_header_t*)page->data;
+
+        if (hdr->page_type == PAGE_TYPE_BTREE_LEAF) {
+            return page;  /* Found leaf */
+        }
+
+        /* Record this internal node in path */
+        if (*path_len < BTREE_MAX_DEPTH) {
+            uint16_t idx = search_internal(page->data, key, tree->compare, tree->key_size);
+            path[*path_len].page_id = page_id;
+            path[*path_len].slot_index = idx;
+            (*path_len)++;
+
+            page_id_t child = get_child(page->data, idx, tree->key_size);
+            buffer_pool_unpin(tree->pool, page, false);
+            page_id = child;
+        } else {
+            buffer_pool_unpin(tree->pool, page, false);
+            return nullptr;  /* Tree too deep */
+        }
+    }
+}
+
+/* Split internal node and return separator for parent */
+static int split_internal(btree_t* tree, buffer_page_t* node,
+                           const value_t* key, page_id_t left_child, page_id_t right_child,
+                           buffer_page_t** new_node_out, value_t* separator_out) {
+    uint16_t count = get_key_count(node->data);
+
+    /* Allocate new internal node */
+    page_id_t new_page_id;
+    buffer_page_t* new_node = buffer_pool_new_page(tree->pool, tree->file, &new_page_id);
+    if (!new_node) return SPEEDSQL_NOMEM;
+
+    /* Initialize new internal node */
+    page_header_t* new_hdr = (page_header_t*)new_node->data;
+    new_hdr->page_type = PAGE_TYPE_BTREE_INTERNAL;
+    new_hdr->flags = 0;
+    new_hdr->cell_count = 0;
+    new_hdr->free_start = BTREE_INTERNAL_HEADER_SIZE;
+    new_hdr->free_end = tree->pool->page_size;
+
+    /* Find split point and where new key goes */
+    uint16_t insert_idx = search_internal(node->data, key, tree->compare, tree->key_size);
+    uint16_t split_point = count / 2;
+
+    /* Build temporary array of all keys including the new one */
+    uint32_t key_sz = tree->key_size;
+    (void)insert_idx;  /* Used for future optimization */
+
+    /* Determine the middle key which becomes the separator */
+    uint16_t mid = split_point;
+
+    /* Copy keys after mid to new node */
+    uint16_t new_count = 0;
+    for (uint16_t i = mid + 1; i < count; i++) {
+        uint8_t* old_key = get_internal_key(node->data, i, key_sz);
+        page_id_t child = get_child(node->data, i + 1, key_sz);
+
+        if (new_count == 0) {
+            set_child(new_node->data, 0, get_child(node->data, mid + 1, key_sz), key_sz);
+        }
+
+        uint8_t* new_key = get_internal_key(new_node->data, new_count, key_sz);
+        memcpy(new_key, old_key, key_sz);
+        set_child(new_node->data, new_count + 1, child, key_sz);
+        new_count++;
+    }
+
+    set_key_count(new_node->data, new_count);
+    new_hdr->cell_count = new_count;
+
+    /* Get separator key (the middle key goes up) */
+    uint8_t* mid_key = get_internal_key(node->data, mid, key_sz);
+    separator_out->type = VAL_BLOB;
+    separator_out->data.blob.len = key_sz;
+    separator_out->data.blob.data = (uint8_t*)sdb_malloc(key_sz);
+    if (separator_out->data.blob.data) {
+        memcpy(separator_out->data.blob.data, mid_key, key_sz);
+    }
+
+    /* Truncate old node */
+    set_key_count(node->data, mid);
+    page_header_t* old_hdr = (page_header_t*)node->data;
+    old_hdr->cell_count = mid;
+
+    /* Now insert the new key into appropriate node */
+    int rc;
+    if (insert_idx <= mid) {
+        rc = insert_into_internal(tree, node, key, left_child, right_child);
+    } else {
+        rc = insert_into_internal(tree, new_node, key, left_child, right_child);
+    }
+
+    if (rc != SPEEDSQL_OK) {
+        buffer_pool_unpin(tree->pool, new_node, false);
+        value_free(separator_out);
+        return rc;
+    }
+
+    *new_node_out = new_node;
+    return SPEEDSQL_OK;
+}
+
+/* Insert separator into parent, splitting if necessary */
+static int insert_into_parent(btree_t* tree, btree_path_entry_t* path, int path_len,
+                               page_id_t left, page_id_t right, value_t* separator) {
+    if (path_len == 0) {
+        /* No parent - need new root */
+        return create_new_root(tree, left, right, separator);
+    }
+
+    /* Get parent from path */
+    btree_path_entry_t* parent_entry = &path[path_len - 1];
+    buffer_page_t* parent = buffer_pool_get(tree->pool, tree->file, parent_entry->page_id);
+    if (!parent) return SPEEDSQL_IOERR;
+
+    /* Try to insert into parent */
+    int rc = insert_into_internal(tree, parent, separator, left, right);
+
+    if (rc == SPEEDSQL_FULL) {
+        /* Parent is full - split it */
+        buffer_page_t* new_parent = nullptr;
+        value_t parent_separator;
+        memset(&parent_separator, 0, sizeof(parent_separator));
+
+        rc = split_internal(tree, parent, separator, left, right, &new_parent, &parent_separator);
+        if (rc != SPEEDSQL_OK) {
+            buffer_pool_unpin(tree->pool, parent, false);
+            return rc;
+        }
+
+        /* Recursively insert into grandparent */
+        rc = insert_into_parent(tree, path, path_len - 1,
+                                 parent->page_id, new_parent->page_id, &parent_separator);
+
+        buffer_pool_unpin(tree->pool, new_parent, true);
+        value_free(&parent_separator);
+    }
+
+    buffer_pool_unpin(tree->pool, parent, rc == SPEEDSQL_OK);
+    return rc;
+}
+
 int btree_find(btree_t* tree, const value_t* key, value_t* value) {
     if (!tree || !key) return SPEEDSQL_MISUSE;
 
@@ -456,7 +623,6 @@ static int split_leaf(btree_t* tree, buffer_page_t* leaf,
 /* Insert into internal node */
 static int insert_into_internal(btree_t* tree, buffer_page_t* node,
                                  const value_t* key, page_id_t left, page_id_t right) {
-    page_header_t* hdr = (page_header_t*)node->data;
     uint16_t count = get_key_count(node->data);
 
     /* Find insertion point */
@@ -534,7 +700,11 @@ int btree_insert(btree_t* tree, const value_t* key, const value_t* value) {
 
     rwlock_wrlock(&tree->lock);
 
-    buffer_page_t* leaf = find_leaf(tree, key);
+    /* Track path from root to leaf for potential splits */
+    btree_path_entry_t path[BTREE_MAX_DEPTH];
+    int path_len = 0;
+
+    buffer_page_t* leaf = find_leaf_with_path(tree, key, path, &path_len);
     if (!leaf) {
         rwlock_unlock(&tree->lock);
         return SPEEDSQL_IOERR;
@@ -551,15 +721,9 @@ int btree_insert(btree_t* tree, const value_t* key, const value_t* value) {
         rc = split_leaf(tree, leaf, key, value, &new_leaf, &separator);
 
         if (rc == SPEEDSQL_OK) {
-            /* Check if root was split */
-            if (leaf->page_id == tree->root_page) {
-                /* Create new root */
-                rc = create_new_root(tree, leaf->page_id, new_leaf->page_id, &separator);
-            } else {
-                /* TODO: Insert separator into parent
-                 * For now, we only handle root splits properly */
-                rc = SPEEDSQL_OK;  /* Simplified - works for small trees */
-            }
+            /* Insert separator into parent (handles all cases including new root) */
+            rc = insert_into_parent(tree, path, path_len,
+                                     leaf->page_id, new_leaf->page_id, &separator);
 
             buffer_pool_unpin(tree->pool, new_leaf, true);
             value_free(&separator);

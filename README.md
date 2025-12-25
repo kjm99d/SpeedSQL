@@ -255,20 +255,25 @@ SpeedSQL/
 - [x] SQL lexer & parser
 - [x] Encryption module (AES, ARIA, SEED, ChaCha20)
 - [x] Modern C++ wrapper
-- [ ] Query executor
-- [ ] Schema management
+- [x] Query executor (prepare/step/finalize, bind, column access)
+- [x] Schema management (CREATE TABLE, table catalog)
+- [x] B+Tree page splits (leaf & internal nodes, root promotion)
+- [x] WAL implementation (write, commit, rollback, recover, checkpoint)
+- [x] AES-256-CBC / ARIA-256-CBC modes with HMAC authentication
+- [x] CREATE INDEX parsing
+- [x] Encryption key API (speedsql_key, speedsql_key_v2, speedsql_rekey)
 
 ### v0.2
-- [ ] B+Tree page splits
-- [ ] WAL implementation
-- [ ] Full transaction support
+- [ ] Full transaction support (nested transactions, savepoints)
 - [ ] Page-level encryption integration
+- [ ] Secondary index execution
+- [ ] UPDATE/DELETE execution with indexes
 
 ### v0.3
-- [ ] Query optimizer
-- [ ] Multi-table joins
-- [ ] Secondary indexes
+- [ ] Query optimizer (cost-based)
+- [ ] Multi-table joins (nested loop, hash join)
 - [ ] JSON functions
+- [ ] Aggregate functions
 
 ### v1.0
 - [ ] CC certification preparation

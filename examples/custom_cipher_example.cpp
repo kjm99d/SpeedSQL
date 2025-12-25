@@ -8,6 +8,7 @@
 #include "speedsql.h"
 #include "speedsql_crypto.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ============================================================================

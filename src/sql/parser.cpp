@@ -668,6 +668,75 @@ static parsed_stmt_t* parse_create_table(parser_t* parser) {
     return stmt;
 }
 
+/* CREATE INDEX [UNIQUE] index_name ON table_name (column1, column2, ...) */
+static parsed_stmt_t* parse_create_index(parser_t* parser, bool is_unique) {
+    parsed_stmt_t* stmt = (parsed_stmt_t*)sdb_calloc(1, sizeof(parsed_stmt_t));
+    if (!stmt) return nullptr;
+
+    stmt->op = SQL_CREATE_INDEX;
+    stmt->new_index = (index_def_t*)sdb_calloc(1, sizeof(index_def_t));
+    if (!stmt->new_index) {
+        sdb_free(stmt);
+        return nullptr;
+    }
+
+    if (is_unique) {
+        stmt->new_index->flags |= IDX_FLAG_UNIQUE;
+    }
+
+    /* Parse index name */
+    consume(parser, TOK_IDENT, "Expected index name");
+    stmt->new_index->name = copy_identifier(&parser->previous);
+
+    /* Parse ON table_name */
+    consume(parser, TOK_ON, "Expected ON after index name");
+    consume(parser, TOK_IDENT, "Expected table name");
+    stmt->new_index->table_name = copy_identifier(&parser->previous);
+
+    /* Parse column list */
+    consume(parser, TOK_LPAREN, "Expected '(' after table name");
+
+    int capacity = 8;
+    stmt->new_index->column_indices = (uint32_t*)sdb_malloc(capacity * sizeof(uint32_t));
+
+    /* For now, store column names temporarily and resolve indices later */
+    /* We'll store the column count and use column_indices as placeholder */
+    char** column_names = (char**)sdb_malloc(capacity * sizeof(char*));
+    int col_count = 0;
+
+    do {
+        if (col_count >= capacity) {
+            capacity *= 2;
+            column_names = (char**)sdb_realloc(column_names, capacity * sizeof(char*));
+            stmt->new_index->column_indices = (uint32_t*)sdb_realloc(
+                stmt->new_index->column_indices, capacity * sizeof(uint32_t));
+        }
+
+        consume(parser, TOK_IDENT, "Expected column name");
+        column_names[col_count] = copy_identifier(&parser->previous);
+
+        /* Check for ASC/DESC (ignore for now) */
+        if (match(parser, TOK_IDENT)) {
+            /* Skip ASC/DESC keyword */
+        }
+
+        stmt->new_index->column_indices[col_count] = col_count;  /* Placeholder */
+        col_count++;
+    } while (match(parser, TOK_COMMA));
+
+    stmt->new_index->column_count = col_count;
+
+    /* Free temporary column names (in real impl, resolve to indices) */
+    for (int i = 0; i < col_count; i++) {
+        sdb_free(column_names[i]);
+    }
+    sdb_free(column_names);
+
+    consume(parser, TOK_RPAREN, "Expected ')' after column list");
+
+    return stmt;
+}
+
 parsed_stmt_t* parser_parse(parser_t* parser) {
     if (match(parser, TOK_SELECT)) {
         return parse_select(parser);
@@ -689,8 +758,14 @@ parsed_stmt_t* parser_parse(parser_t* parser) {
         if (match(parser, TOK_TABLE)) {
             return parse_create_table(parser);
         }
-        /* TODO: CREATE INDEX */
-        parser_error(parser, "Expected TABLE or INDEX after CREATE");
+        if (match(parser, TOK_UNIQUE)) {
+            consume(parser, TOK_INDEX, "Expected INDEX after UNIQUE");
+            return parse_create_index(parser, true);
+        }
+        if (match(parser, TOK_INDEX)) {
+            return parse_create_index(parser, false);
+        }
+        parser_error(parser, "Expected TABLE, INDEX, or UNIQUE INDEX after CREATE");
         return nullptr;
     }
 

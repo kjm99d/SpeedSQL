@@ -356,7 +356,10 @@ SPEEDSQL_API int speedsql_rollback(speedsql* db) {
         wal_rollback(db->wal, db->current_txn);
     }
 
-    /* TODO: Invalidate dirty pages in buffer pool */
+    /* Invalidate dirty pages in buffer pool */
+    if (db->buffer_pool) {
+        buffer_pool_invalidate_dirty(db->buffer_pool, &db->db_file);
+    }
 
     db->txn_state = TXN_NONE;
     db->current_txn = 0;

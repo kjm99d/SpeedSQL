@@ -8,6 +8,89 @@
 #include <stdarg.h>
 
 /* ============================================================================
+ * Parameter Counting (for prepared statements)
+ * ============================================================================ */
+
+static int count_params_in_expr(expr_t* expr);
+
+static int count_params_in_expr(expr_t* expr) {
+    if (!expr) return 0;
+
+    switch (expr->type) {
+        case EXPR_PARAMETER:
+            return 1;
+
+        case EXPR_LITERAL:
+        case EXPR_COLUMN:
+            return 0;
+
+        case EXPR_BINARY_OP:
+            return count_params_in_expr(expr->data.binary.left) +
+                   count_params_in_expr(expr->data.binary.right);
+
+        case EXPR_UNARY_OP:
+            return count_params_in_expr(expr->data.unary.operand);
+
+        case EXPR_FUNCTION:
+            {
+                int count = 0;
+                for (int i = 0; i < expr->data.function.arg_count; i++) {
+                    count += count_params_in_expr(expr->data.function.args[i]);
+                }
+                return count;
+            }
+
+        case EXPR_SUBQUERY:
+            return 0;  /* Subquery params counted separately */
+
+        default:
+            return 0;
+    }
+}
+
+static int count_params_in_stmt(parsed_stmt_t* stmt) {
+    if (!stmt) return 0;
+
+    int count = 0;
+
+    /* WHERE clause */
+    count += count_params_in_expr(stmt->where);
+
+    /* SELECT columns */
+    for (int i = 0; i < stmt->column_count; i++) {
+        if (stmt->columns && stmt->columns[i].expr) {
+            count += count_params_in_expr(stmt->columns[i].expr);
+        }
+    }
+
+    /* UPDATE SET expressions */
+    for (int i = 0; i < stmt->update_count; i++) {
+        if (stmt->update_exprs && stmt->update_exprs[i]) {
+            count += count_params_in_expr(stmt->update_exprs[i]);
+        }
+    }
+
+    /* GROUP BY */
+    for (int i = 0; i < stmt->group_by_count; i++) {
+        if (stmt->group_by && stmt->group_by[i]) {
+            count += count_params_in_expr(stmt->group_by[i]);
+        }
+    }
+
+    /* HAVING */
+    count += count_params_in_expr(stmt->having);
+
+    /* ORDER BY */
+    for (int i = 0; i < stmt->order_by_count; i++) {
+        if (stmt->order_by && stmt->order_by[i].expr) {
+            count += count_params_in_expr(stmt->order_by[i].expr);
+        }
+    }
+
+    return count;
+}
+
+/* ============================================================================
  * Plan Management
  * ============================================================================ */
 
@@ -721,9 +804,8 @@ SPEEDSQL_API int speedsql_prepare(
         *tail = parser.lexer.current;
     }
 
-    /* Count parameters */
-    stmt->param_count = 0;
-    /* TODO: Walk AST to count ? parameters */
+    /* Count parameters by walking the AST */
+    stmt->param_count = count_params_in_stmt(stmt->parsed);
 
     /* Allocate parameter array if needed */
     if (stmt->param_count > 0) {
