@@ -1,19 +1,24 @@
 /*
- * SpeedDB - Crypto Provider Registry
+ * SpeedSQL - Crypto Provider Registry
  *
  * Manages cipher provider registration and lookup (Strategy Pattern)
  */
 
-#include "speeddb_internal.h"
-#include "speeddb_crypto.h"
+#include "speedsql_internal.h"
+#include "speedsql_crypto.h"
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <wincrypt.h>
+#endif
 
 /* Maximum number of registered cipher providers */
 #define MAX_CIPHER_PROVIDERS 32
 
 /* Provider registry */
 static struct {
-    const speeddb_cipher_provider_t* providers[MAX_CIPHER_PROVIDERS];
+    const speedsql_cipher_provider_t* providers[MAX_CIPHER_PROVIDERS];
     int count;
     mutex_t lock;
     bool initialized;
@@ -21,16 +26,16 @@ static struct {
 } g_crypto_registry = {0};
 
 /* Crypto module version */
-static const char* CRYPTO_VERSION = "SpeedDB Crypto 1.0.0";
+static const char* CRYPTO_VERSION = "SpeedSQL Crypto 1.0.0";
 
 /* Forward declarations of built-in providers */
-extern const speeddb_cipher_provider_t g_cipher_none;
-extern const speeddb_cipher_provider_t g_cipher_aes_256_gcm;
-extern const speeddb_cipher_provider_t g_cipher_aes_256_cbc;
-extern const speeddb_cipher_provider_t g_cipher_aria_256_gcm;
-extern const speeddb_cipher_provider_t g_cipher_aria_256_cbc;
-extern const speeddb_cipher_provider_t g_cipher_seed_cbc;
-extern const speeddb_cipher_provider_t g_cipher_chacha20_poly1305;
+extern const speedsql_cipher_provider_t g_cipher_none;
+extern const speedsql_cipher_provider_t g_cipher_aes_256_gcm;
+extern const speedsql_cipher_provider_t g_cipher_aes_256_cbc;
+extern const speedsql_cipher_provider_t g_cipher_aria_256_gcm;
+extern const speedsql_cipher_provider_t g_cipher_aria_256_cbc;
+extern const speedsql_cipher_provider_t g_cipher_seed_cbc;
+extern const speedsql_cipher_provider_t g_cipher_chacha20_poly1305;
 
 /* Initialize crypto registry */
 static void crypto_registry_init(void) {
@@ -53,9 +58,9 @@ static void crypto_registry_init(void) {
 }
 
 /* Register a custom cipher provider */
-SPEEDDB_API int speeddb_register_cipher(const speeddb_cipher_provider_t* provider) {
+SPEEDSQL_API int speedsql_register_cipher(const speedsql_cipher_provider_t* provider) {
     if (!provider || !provider->name) {
-        return SPEEDDB_MISUSE;
+        return SPEEDSQL_MISUSE;
     }
 
     crypto_registry_init();
@@ -65,25 +70,25 @@ SPEEDDB_API int speeddb_register_cipher(const speeddb_cipher_provider_t* provide
     for (int i = 0; i < g_crypto_registry.count; i++) {
         if (g_crypto_registry.providers[i]->cipher_id == provider->cipher_id) {
             mutex_unlock(&g_crypto_registry.lock);
-            return SPEEDDB_CONSTRAINT;  /* Already registered */
+            return SPEEDSQL_CONSTRAINT;  /* Already registered */
         }
     }
 
     if (g_crypto_registry.count >= MAX_CIPHER_PROVIDERS) {
         mutex_unlock(&g_crypto_registry.lock);
-        return SPEEDDB_FULL;
+        return SPEEDSQL_FULL;
     }
 
     g_crypto_registry.providers[g_crypto_registry.count++] = provider;
     mutex_unlock(&g_crypto_registry.lock);
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 /* Unregister a cipher provider */
-SPEEDDB_API int speeddb_unregister_cipher(speeddb_cipher_t cipher_id) {
-    if (cipher_id <= SPEEDDB_CIPHER_CHACHA20_POLY1305) {
-        return SPEEDDB_MISUSE;  /* Cannot unregister built-in ciphers */
+SPEEDSQL_API int speedsql_unregister_cipher(speedsql_cipher_t cipher_id) {
+    if (cipher_id <= SPEEDSQL_CIPHER_CHACHA20_POLY1305) {
+        return SPEEDSQL_MISUSE;  /* Cannot unregister built-in ciphers */
     }
 
     crypto_registry_init();
@@ -97,16 +102,16 @@ SPEEDDB_API int speeddb_unregister_cipher(speeddb_cipher_t cipher_id) {
             }
             g_crypto_registry.count--;
             mutex_unlock(&g_crypto_registry.lock);
-            return SPEEDDB_OK;
+            return SPEEDSQL_OK;
         }
     }
 
     mutex_unlock(&g_crypto_registry.lock);
-    return SPEEDDB_NOTFOUND;
+    return SPEEDSQL_NOTFOUND;
 }
 
 /* Get cipher provider by ID */
-SPEEDDB_API const speeddb_cipher_provider_t* speeddb_get_cipher(speeddb_cipher_t cipher_id) {
+SPEEDSQL_API const speedsql_cipher_provider_t* speedsql_get_cipher(speedsql_cipher_t cipher_id) {
     crypto_registry_init();
 
     for (int i = 0; i < g_crypto_registry.count; i++) {
@@ -119,14 +124,14 @@ SPEEDDB_API const speeddb_cipher_provider_t* speeddb_get_cipher(speeddb_cipher_t
 }
 
 /* List available ciphers */
-SPEEDDB_API int speeddb_list_ciphers(speeddb_cipher_t* ciphers, int* count) {
-    if (!count) return SPEEDDB_MISUSE;
+SPEEDSQL_API int speedsql_list_ciphers(speedsql_cipher_t* ciphers, int* count) {
+    if (!count) return SPEEDSQL_MISUSE;
 
     crypto_registry_init();
 
     if (!ciphers) {
         *count = g_crypto_registry.count;
-        return SPEEDDB_OK;
+        return SPEEDSQL_OK;
     }
 
     int n = (*count < g_crypto_registry.count) ? *count : g_crypto_registry.count;
@@ -135,49 +140,49 @@ SPEEDDB_API int speeddb_list_ciphers(speeddb_cipher_t* ciphers, int* count) {
     }
     *count = n;
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 /* Run all cipher self-tests */
-SPEEDDB_API int speeddb_crypto_self_test(void) {
+SPEEDSQL_API int speedsql_crypto_self_test(void) {
     crypto_registry_init();
 
     for (int i = 0; i < g_crypto_registry.count; i++) {
-        const speeddb_cipher_provider_t* p = g_crypto_registry.providers[i];
+        const speedsql_cipher_provider_t* p = g_crypto_registry.providers[i];
         if (p->self_test) {
             int rc = p->self_test();
-            if (rc != SPEEDDB_OK) {
+            if (rc != SPEEDSQL_OK) {
                 return rc;
             }
         }
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 /* Get crypto module version */
-SPEEDDB_API const char* speeddb_crypto_version(void) {
+SPEEDSQL_API const char* speedsql_crypto_version(void) {
     return CRYPTO_VERSION;
 }
 
 /* Check FIPS mode */
-SPEEDDB_API bool speeddb_crypto_fips_mode(void) {
+SPEEDSQL_API bool speedsql_crypto_fips_mode(void) {
     crypto_registry_init();
     return g_crypto_registry.fips_mode;
 }
 
 /* Enable FIPS mode */
-SPEEDDB_API int speeddb_crypto_enable_fips(void) {
+SPEEDSQL_API int speedsql_crypto_enable_fips(void) {
     crypto_registry_init();
 
     /* Run self-tests first (required for FIPS) */
-    int rc = speeddb_crypto_self_test();
-    if (rc != SPEEDDB_OK) {
+    int rc = speedsql_crypto_self_test();
+    if (rc != SPEEDSQL_OK) {
         return rc;
     }
 
     g_crypto_registry.fips_mode = true;
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 /* ============================================================================
@@ -187,7 +192,7 @@ SPEEDDB_API int speeddb_crypto_enable_fips(void) {
 #ifdef _WIN32
 #include <windows.h>
 
-SPEEDDB_API void* speeddb_secure_malloc(size_t size) {
+SPEEDSQL_API void* speedsql_secure_malloc(size_t size) {
     void* ptr = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (ptr) {
         /* Lock memory to prevent swapping */
@@ -196,9 +201,9 @@ SPEEDDB_API void* speeddb_secure_malloc(size_t size) {
     return ptr;
 }
 
-SPEEDDB_API void speeddb_secure_free(void* ptr, size_t size) {
+SPEEDSQL_API void speedsql_secure_free(void* ptr, size_t size) {
     if (ptr) {
-        speeddb_secure_zero(ptr, size);
+        speedsql_secure_zero(ptr, size);
         VirtualUnlock(ptr, size);
         VirtualFree(ptr, 0, MEM_RELEASE);
     }
@@ -207,7 +212,7 @@ SPEEDDB_API void speeddb_secure_free(void* ptr, size_t size) {
 #else
 #include <sys/mman.h>
 
-SPEEDDB_API void* speeddb_secure_malloc(size_t size) {
+SPEEDSQL_API void* speedsql_secure_malloc(size_t size) {
     void* ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ptr != MAP_FAILED) {
@@ -217,9 +222,9 @@ SPEEDDB_API void* speeddb_secure_malloc(size_t size) {
     return nullptr;
 }
 
-SPEEDDB_API void speeddb_secure_free(void* ptr, size_t size) {
+SPEEDSQL_API void speedsql_secure_free(void* ptr, size_t size) {
     if (ptr) {
-        speeddb_secure_zero(ptr, size);
+        speedsql_secure_zero(ptr, size);
         munlock(ptr, size);
         munmap(ptr, size);
     }
@@ -228,7 +233,7 @@ SPEEDDB_API void speeddb_secure_free(void* ptr, size_t size) {
 #endif
 
 /* Secure zeroization - prevent compiler optimization */
-SPEEDDB_API void speeddb_secure_zero(void* ptr, size_t size) {
+SPEEDSQL_API void speedsql_secure_zero(void* ptr, size_t size) {
     volatile uint8_t* p = (volatile uint8_t*)ptr;
     while (size--) {
         *p++ = 0;
@@ -241,24 +246,24 @@ static int secure_random(uint8_t* buf, size_t len) {
     HCRYPTPROV hProv;
     if (!CryptAcquireContextW(&hProv, NULL, NULL, PROV_RSA_FULL,
                                CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
-        return SPEEDDB_ERROR;
+        return SPEEDSQL_ERROR;
     }
     BOOL ok = CryptGenRandom(hProv, (DWORD)len, buf);
     CryptReleaseContext(hProv, 0);
-    return ok ? SPEEDDB_OK : SPEEDDB_ERROR;
+    return ok ? SPEEDSQL_OK : SPEEDSQL_ERROR;
 #else
     FILE* f = fopen("/dev/urandom", "rb");
-    if (!f) return SPEEDDB_ERROR;
+    if (!f) return SPEEDSQL_ERROR;
     size_t n = fread(buf, 1, len, f);
     fclose(f);
-    return (n == len) ? SPEEDDB_OK : SPEEDDB_ERROR;
+    return (n == len) ? SPEEDSQL_OK : SPEEDSQL_ERROR;
 #endif
 }
 
-SPEEDDB_API int speeddb_random_salt(uint8_t* salt, size_t salt_len) {
+SPEEDSQL_API int speedsql_random_salt(uint8_t* salt, size_t salt_len) {
     return secure_random(salt, salt_len);
 }
 
-SPEEDDB_API int speeddb_random_key(uint8_t* key, size_t key_len) {
+SPEEDSQL_API int speedsql_random_key(uint8_t* key, size_t key_len) {
     return secure_random(key, key_len);
 }

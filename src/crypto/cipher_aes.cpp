@@ -1,5 +1,5 @@
 /*
- * SpeedDB - AES-256 Cipher Implementation
+ * SpeedSQL - AES-256 Cipher Implementation
  *
  * Supports:
  * - AES-256-GCM (Galois/Counter Mode with authentication)
@@ -9,8 +9,8 @@
  * hardware-accelerated libraries (OpenSSL, Windows CNG, etc.)
  */
 
-#include "speeddb_internal.h"
-#include "speeddb_crypto.h"
+#include "speedsql_internal.h"
+#include "speedsql_crypto.h"
 #include <string.h>
 
 /* ============================================================================
@@ -99,11 +99,11 @@ static const uint8_t rcon[11] = {
 };
 
 /* AES context */
-struct speeddb_cipher_ctx {
+struct speedsql_cipher_ctx {
     uint8_t round_keys[240];  /* Expanded key schedule */
     uint8_t key[32];          /* Original key */
     bool initialized;
-    speeddb_cipher_t mode;    /* GCM or CBC */
+    speedsql_cipher_t mode;    /* GCM or CBC */
 };
 
 /* GF(2^8) multiplication */
@@ -323,30 +323,30 @@ static void gcm_ghash(const uint8_t* h, const uint8_t* data, size_t len,
     }
 }
 
-static int aes_gcm_init(speeddb_cipher_ctx_t** ctx,
+static int aes_gcm_init(speedsql_cipher_ctx_t** ctx,
                         const uint8_t* key, size_t key_len) {
-    if (key_len != 32) return SPEEDDB_MISUSE;
+    if (key_len != 32) return SPEEDSQL_MISUSE;
 
-    *ctx = (speeddb_cipher_ctx_t*)speeddb_secure_malloc(sizeof(speeddb_cipher_ctx_t));
-    if (!*ctx) return SPEEDDB_NOMEM;
+    *ctx = (speedsql_cipher_ctx_t*)speedsql_secure_malloc(sizeof(speedsql_cipher_ctx_t));
+    if (!*ctx) return SPEEDSQL_NOMEM;
 
     memcpy((*ctx)->key, key, 32);
     aes_key_expansion(key, (*ctx)->round_keys);
     (*ctx)->initialized = true;
-    (*ctx)->mode = SPEEDDB_CIPHER_AES_256_GCM;
+    (*ctx)->mode = SPEEDSQL_CIPHER_AES_256_GCM;
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static void aes_gcm_destroy(speeddb_cipher_ctx_t* ctx) {
+static void aes_gcm_destroy(speedsql_cipher_ctx_t* ctx) {
     if (ctx) {
-        speeddb_secure_zero(ctx, sizeof(*ctx));
-        speeddb_secure_free(ctx, sizeof(*ctx));
+        speedsql_secure_zero(ctx, sizeof(*ctx));
+        speedsql_secure_free(ctx, sizeof(*ctx));
     }
 }
 
 static int aes_gcm_encrypt(
-    speeddb_cipher_ctx_t* ctx,
+    speedsql_cipher_ctx_t* ctx,
     const uint8_t* plaintext,
     size_t plaintext_len,
     const uint8_t* iv,
@@ -355,7 +355,7 @@ static int aes_gcm_encrypt(
     uint8_t* ciphertext,
     uint8_t* tag
 ) {
-    if (!ctx || !ctx->initialized) return SPEEDDB_MISUSE;
+    if (!ctx || !ctx->initialized) return SPEEDSQL_MISUSE;
 
     uint8_t h[16] = {0};
     uint8_t j0[16], counter[16];
@@ -408,11 +408,11 @@ static int aes_gcm_encrypt(
         tag[i] = s[i] ^ enc_counter[i];
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 static int aes_gcm_decrypt(
-    speeddb_cipher_ctx_t* ctx,
+    speedsql_cipher_ctx_t* ctx,
     const uint8_t* ciphertext,
     size_t ciphertext_len,
     const uint8_t* iv,
@@ -421,7 +421,7 @@ static int aes_gcm_decrypt(
     const uint8_t* tag,
     uint8_t* plaintext
 ) {
-    if (!ctx || !ctx->initialized) return SPEEDDB_MISUSE;
+    if (!ctx || !ctx->initialized) return SPEEDSQL_MISUSE;
 
     uint8_t computed_tag[16];
     uint8_t h[16] = {0};
@@ -462,7 +462,7 @@ static int aes_gcm_decrypt(
         diff |= computed_tag[i] ^ tag[i];
     }
     if (diff != 0) {
-        return SPEEDDB_CORRUPT;  /* Authentication failed */
+        return SPEEDSQL_CORRUPT;  /* Authentication failed */
     }
 
     /* Decrypt ciphertext with CTR mode */
@@ -480,20 +480,20 @@ static int aes_gcm_decrypt(
         }
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static int aes_gcm_rekey(speeddb_cipher_ctx_t* ctx,
+static int aes_gcm_rekey(speedsql_cipher_ctx_t* ctx,
                           const uint8_t* new_key, size_t key_len) {
-    if (!ctx || key_len != 32) return SPEEDDB_MISUSE;
+    if (!ctx || key_len != 32) return SPEEDSQL_MISUSE;
 
-    speeddb_secure_zero(ctx->key, 32);
-    speeddb_secure_zero(ctx->round_keys, 240);
+    speedsql_secure_zero(ctx->key, 32);
+    speedsql_secure_zero(ctx->round_keys, 240);
 
     memcpy(ctx->key, new_key, 32);
     aes_key_expansion(new_key, ctx->round_keys);
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 static int aes_gcm_self_test(void) {
@@ -513,45 +513,45 @@ static int aes_gcm_self_test(void) {
         0xa5, 0x59, 0x09, 0xc5, 0xaf, 0xf5, 0x26, 0x9a
     };
 
-    speeddb_cipher_ctx_t* ctx;
+    speedsql_cipher_ctx_t* ctx;
     int rc = aes_gcm_init(&ctx, key, 32);
-    if (rc != SPEEDDB_OK) return rc;
+    if (rc != SPEEDSQL_OK) return rc;
 
     uint8_t ciphertext[16], tag[16], decrypted[16];
     rc = aes_gcm_encrypt(ctx, plaintext, 16, iv, nullptr, 0, ciphertext, tag);
-    if (rc != SPEEDDB_OK) {
+    if (rc != SPEEDSQL_OK) {
         aes_gcm_destroy(ctx);
         return rc;
     }
 
     rc = aes_gcm_decrypt(ctx, ciphertext, 16, iv, nullptr, 0, tag, decrypted);
-    if (rc != SPEEDDB_OK) {
+    if (rc != SPEEDSQL_OK) {
         aes_gcm_destroy(ctx);
         return rc;
     }
 
     if (memcmp(plaintext, decrypted, 16) != 0) {
         aes_gcm_destroy(ctx);
-        return SPEEDDB_ERROR;
+        return SPEEDSQL_ERROR;
     }
 
     aes_gcm_destroy(ctx);
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static void aes_gcm_zeroize(speeddb_cipher_ctx_t* ctx) {
+static void aes_gcm_zeroize(speedsql_cipher_ctx_t* ctx) {
     if (ctx) {
-        speeddb_secure_zero(ctx->key, 32);
-        speeddb_secure_zero(ctx->round_keys, 240);
+        speedsql_secure_zero(ctx->key, 32);
+        speedsql_secure_zero(ctx->round_keys, 240);
         ctx->initialized = false;
     }
 }
 
 /* Global provider instances */
-const speeddb_cipher_provider_t g_cipher_aes_256_gcm = {
+extern "C" const speedsql_cipher_provider_t g_cipher_aes_256_gcm = {
     .name = "AES-256-GCM",
     .version = "1.0.0",
-    .cipher_id = SPEEDDB_CIPHER_AES_256_GCM,
+    .cipher_id = SPEEDSQL_CIPHER_AES_256_GCM,
     .key_size = 32,
     .iv_size = 12,
     .tag_size = 16,
@@ -566,10 +566,10 @@ const speeddb_cipher_provider_t g_cipher_aes_256_gcm = {
 };
 
 /* AES-256-CBC placeholder (uses same core, different mode) */
-const speeddb_cipher_provider_t g_cipher_aes_256_cbc = {
+extern "C" const speedsql_cipher_provider_t g_cipher_aes_256_cbc = {
     .name = "AES-256-CBC",
     .version = "1.0.0",
-    .cipher_id = SPEEDDB_CIPHER_AES_256_CBC,
+    .cipher_id = SPEEDSQL_CIPHER_AES_256_CBC,
     .key_size = 32,
     .iv_size = 16,
     .tag_size = 32,  /* HMAC-SHA256 */

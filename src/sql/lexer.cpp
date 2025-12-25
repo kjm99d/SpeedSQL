@@ -1,10 +1,10 @@
 /*
- * SpeedDB - SQL Lexer
+ * SpeedSQL - SQL Lexer
  *
  * Tokenizes SQL input for the parser
  */
 
-#include "speeddb_internal.h"
+#include "speedsql_internal.h"
 #include <ctype.h>
 
 /* Keyword table */

@@ -1,11 +1,11 @@
 /*
- * SpeedDB - Buffer Pool / Page Cache
+ * SpeedSQL - Buffer Pool / Page Cache
  *
  * High-performance page cache using LRU eviction and concurrent access.
  * This is critical for performance - SQLite's cache is often a bottleneck.
  */
 
-#include "speeddb_internal.h"
+#include "speedsql_internal.h"
 
 /* Hash function for page IDs */
 static inline size_t page_hash(page_id_t page_id, size_t size) {
@@ -15,7 +15,7 @@ static inline size_t page_hash(page_id_t page_id, size_t size) {
 
 int buffer_pool_init(buffer_pool_t* pool, size_t cache_size, uint32_t page_size) {
     if (!pool || cache_size == 0 || page_size == 0) {
-        return SPEEDDB_MISUSE;
+        return SPEEDSQL_MISUSE;
     }
 
     memset(pool, 0, sizeof(*pool));
@@ -33,7 +33,7 @@ int buffer_pool_init(buffer_pool_t* pool, size_t cache_size, uint32_t page_size)
     /* Allocate hash table */
     pool->hash_table = (buffer_page_t**)sdb_calloc(pool->hash_size, sizeof(buffer_page_t*));
     if (!pool->hash_table) {
-        return SPEEDDB_NOMEM;
+        return SPEEDSQL_NOMEM;
     }
 
     /* Pre-allocate all buffer pages */
@@ -41,14 +41,14 @@ int buffer_pool_init(buffer_pool_t* pool, size_t cache_size, uint32_t page_size)
         buffer_page_t* page = (buffer_page_t*)sdb_malloc(sizeof(buffer_page_t));
         if (!page) {
             buffer_pool_destroy(pool);
-            return SPEEDDB_NOMEM;
+            return SPEEDSQL_NOMEM;
         }
 
         page->data = (uint8_t*)sdb_malloc(page_size);
         if (!page->data) {
             sdb_free(page);
             buffer_pool_destroy(pool);
-            return SPEEDDB_NOMEM;
+            return SPEEDSQL_NOMEM;
         }
 
         page->page_id = INVALID_PAGE_ID;
@@ -67,7 +67,7 @@ int buffer_pool_init(buffer_pool_t* pool, size_t cache_size, uint32_t page_size)
 
     mutex_init(&pool->lock);
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 void buffer_pool_destroy(buffer_pool_t* pool) {
@@ -249,7 +249,7 @@ buffer_page_t* buffer_pool_get(buffer_pool_t* pool, file_t* file, page_id_t page
     /* Read page from disk */
     page->page_id = page_id;
     int rc = file_read(file, page_id * pool->page_size, page->data, pool->page_size);
-    if (rc != SPEEDDB_OK) {
+    if (rc != SPEEDSQL_OK) {
         /* Read failed - put page back on free list */
         page->page_id = INVALID_PAGE_ID;
         page->lru_next = pool->free_list;
@@ -291,20 +291,20 @@ void buffer_pool_unpin(buffer_pool_t* pool, buffer_page_t* page, bool dirty) {
 }
 
 int buffer_pool_flush(buffer_pool_t* pool, file_t* file) {
-    if (!pool || !file) return SPEEDDB_MISUSE;
+    if (!pool || !file) return SPEEDSQL_MISUSE;
 
     mutex_lock(&pool->lock);
 
-    int rc = SPEEDDB_OK;
+    int rc = SPEEDSQL_OK;
 
     /* Iterate through all pages in hash table */
-    for (size_t i = 0; i < pool->hash_size && rc == SPEEDDB_OK; i++) {
+    for (size_t i = 0; i < pool->hash_size && rc == SPEEDSQL_OK; i++) {
         buffer_page_t* page = pool->hash_table[i];
         while (page) {
             if (page->state == BUF_DIRTY) {
                 rc = file_write(file, page->page_id * pool->page_size,
                                page->data, pool->page_size);
-                if (rc == SPEEDDB_OK) {
+                if (rc == SPEEDSQL_OK) {
                     page->state = BUF_CLEAN;
                 }
             }
@@ -312,7 +312,7 @@ int buffer_pool_flush(buffer_pool_t* pool, file_t* file) {
         }
     }
 
-    if (rc == SPEEDDB_OK) {
+    if (rc == SPEEDSQL_OK) {
         rc = file_sync(file);
     }
 
@@ -326,9 +326,9 @@ buffer_page_t* buffer_pool_new_page(buffer_pool_t* pool, file_t* file, page_id_t
     mutex_lock(&pool->lock);
 
     /* Calculate new page ID */
-    uint64_t file_size;
-    file_size(file, &file_size);
-    page_id_t new_page_id = file_size / pool->page_size;
+    uint64_t current_file_size;
+    file_size(file, &current_file_size);
+    page_id_t new_page_id = current_file_size / pool->page_size;
 
     /* Get a page from free list or evict */
     buffer_page_t* page = get_victim(pool, file);
@@ -346,7 +346,7 @@ buffer_page_t* buffer_pool_new_page(buffer_pool_t* pool, file_t* file, page_id_t
 
     /* Extend file */
     int rc = file_write(file, new_page_id * pool->page_size, page->data, pool->page_size);
-    if (rc != SPEEDDB_OK) {
+    if (rc != SPEEDSQL_OK) {
         page->page_id = INVALID_PAGE_ID;
         page->state = BUF_INVALID;
         page->lru_next = pool->free_list;

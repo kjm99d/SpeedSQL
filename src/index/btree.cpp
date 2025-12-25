@@ -1,5 +1,5 @@
 /*
- * SpeedDB - B+Tree Index Implementation
+ * SpeedSQL - B+Tree Index Implementation
  *
  * High-performance B+tree for indexing with:
  * - Lock-free reads (optimistic locking)
@@ -8,7 +8,7 @@
  * - Prefix compression (future)
  */
 
-#include "speeddb_internal.h"
+#include "speedsql_internal.h"
 
 /* B+tree node layout:
  *
@@ -106,7 +106,7 @@ static uint16_t search_internal(uint8_t* page, const value_t* key,
     while (lo < hi) {
         uint16_t mid = (lo + hi) / 2;
         value_t page_key;
-        page_key.type = SPEEDDB_TYPE_BLOB;
+        page_key.type = SPEEDSQL_TYPE_BLOB;
         page_key.data.str.data = (char*)get_internal_key(page, mid, key_size);
         page_key.data.str.len = key_size;
 
@@ -154,7 +154,7 @@ static uint16_t search_leaf(uint8_t* page, const value_t* key,
         /* Cell format: key_len (2) + value_len (2) + key + value */
         uint16_t key_len = *(uint16_t*)cell;
         value_t page_key;
-        page_key.type = SPEEDDB_TYPE_BLOB;
+        page_key.type = SPEEDSQL_TYPE_BLOB;
         page_key.data.str.data = (char*)(cell + 4);
         page_key.data.str.len = key_len;
 
@@ -173,7 +173,7 @@ static uint16_t search_leaf(uint8_t* page, const value_t* key,
 
 int btree_create(btree_t* tree, buffer_pool_t* pool, file_t* file, compare_func_t cmp) {
     if (!tree || !pool || !file || !cmp) {
-        return SPEEDDB_MISUSE;
+        return SPEEDSQL_MISUSE;
     }
 
     memset(tree, 0, sizeof(*tree));
@@ -189,7 +189,7 @@ int btree_create(btree_t* tree, buffer_pool_t* pool, file_t* file, compare_func_
     page_id_t root_id;
     buffer_page_t* root = buffer_pool_new_page(pool, file, &root_id);
     if (!root) {
-        return SPEEDDB_NOMEM;
+        return SPEEDSQL_NOMEM;
     }
 
     /* Initialize root as empty leaf */
@@ -208,13 +208,13 @@ int btree_create(btree_t* tree, buffer_pool_t* pool, file_t* file, compare_func_
     buffer_pool_unpin(pool, root, true);
 
     tree->root_page = root_id;
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int btree_open(btree_t* tree, buffer_pool_t* pool, file_t* file,
                page_id_t root, compare_func_t cmp) {
     if (!tree || !pool || !file || !cmp) {
-        return SPEEDDB_MISUSE;
+        return SPEEDSQL_MISUSE;
     }
 
     memset(tree, 0, sizeof(*tree));
@@ -225,7 +225,7 @@ int btree_open(btree_t* tree, buffer_pool_t* pool, file_t* file,
 
     rwlock_init(&tree->lock);
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 void btree_close(btree_t* tree) {
@@ -257,14 +257,14 @@ static buffer_page_t* find_leaf(btree_t* tree, const value_t* key) {
 }
 
 int btree_find(btree_t* tree, const value_t* key, value_t* value) {
-    if (!tree || !key) return SPEEDDB_MISUSE;
+    if (!tree || !key) return SPEEDSQL_MISUSE;
 
     rwlock_rdlock(&tree->lock);
 
     buffer_page_t* leaf = find_leaf(tree, key);
     if (!leaf) {
         rwlock_unlock(&tree->lock);
-        return SPEEDDB_IOERR;
+        return SPEEDSQL_IOERR;
     }
 
     bool exact;
@@ -273,7 +273,7 @@ int btree_find(btree_t* tree, const value_t* key, value_t* value) {
     if (!exact) {
         buffer_pool_unpin(tree->pool, leaf, false);
         rwlock_unlock(&tree->lock);
-        return SPEEDDB_NOTFOUND;
+        return SPEEDSQL_NOTFOUND;
     }
 
     /* Extract value */
@@ -283,7 +283,7 @@ int btree_find(btree_t* tree, const value_t* key, value_t* value) {
     uint16_t value_len = *(uint16_t*)(cell + 2);
 
     if (value) {
-        value->type = SPEEDDB_TYPE_BLOB;
+        value->type = SPEEDSQL_TYPE_BLOB;
         value->size = value_len;
         value->data.str.len = value_len;
         value->data.str.data = (char*)sdb_malloc(value_len);
@@ -295,7 +295,7 @@ int btree_find(btree_t* tree, const value_t* key, value_t* value) {
     buffer_pool_unpin(tree->pool, leaf, false);
     rwlock_unlock(&tree->lock);
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 /* Insert a cell into a leaf page */
@@ -314,7 +314,7 @@ static int insert_into_leaf(btree_t* tree, buffer_page_t* leaf,
     uint32_t free_space = hdr->free_end - hdr->free_start - count * sizeof(uint16_t);
 
     if (free_space < cell_size + sizeof(uint16_t)) {
-        return SPEEDDB_FULL;  /* Need to split */
+        return SPEEDSQL_FULL;  /* Need to split */
     }
 
     /* Find insertion point */
@@ -323,7 +323,7 @@ static int insert_into_leaf(btree_t* tree, buffer_page_t* leaf,
 
     if (exact) {
         /* Update existing - for now, return error */
-        return SPEEDDB_CONSTRAINT;
+        return SPEEDSQL_CONSTRAINT;
     }
 
     /* Allocate cell from end of page */
@@ -344,44 +344,44 @@ static int insert_into_leaf(btree_t* tree, buffer_page_t* leaf,
     set_key_count(leaf->data, count + 1);
     hdr->cell_count = count + 1;
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int btree_insert(btree_t* tree, const value_t* key, const value_t* value) {
-    if (!tree || !key || !value) return SPEEDDB_MISUSE;
+    if (!tree || !key || !value) return SPEEDSQL_MISUSE;
 
     rwlock_wrlock(&tree->lock);
 
     buffer_page_t* leaf = find_leaf(tree, key);
     if (!leaf) {
         rwlock_unlock(&tree->lock);
-        return SPEEDDB_IOERR;
+        return SPEEDSQL_IOERR;
     }
 
     int rc = insert_into_leaf(tree, leaf, key, value);
 
-    if (rc == SPEEDDB_FULL) {
+    if (rc == SPEEDSQL_FULL) {
         /* TODO: Implement page split */
         buffer_pool_unpin(tree->pool, leaf, false);
         rwlock_unlock(&tree->lock);
-        return SPEEDDB_FULL;  /* For now */
+        return SPEEDSQL_FULL;  /* For now */
     }
 
-    buffer_pool_unpin(tree->pool, leaf, rc == SPEEDDB_OK);
+    buffer_pool_unpin(tree->pool, leaf, rc == SPEEDSQL_OK);
     rwlock_unlock(&tree->lock);
 
     return rc;
 }
 
 int btree_delete(btree_t* tree, const value_t* key) {
-    if (!tree || !key) return SPEEDDB_MISUSE;
+    if (!tree || !key) return SPEEDSQL_MISUSE;
 
     rwlock_wrlock(&tree->lock);
 
     buffer_page_t* leaf = find_leaf(tree, key);
     if (!leaf) {
         rwlock_unlock(&tree->lock);
-        return SPEEDDB_IOERR;
+        return SPEEDSQL_IOERR;
     }
 
     bool exact;
@@ -390,7 +390,7 @@ int btree_delete(btree_t* tree, const value_t* key) {
     if (!exact) {
         buffer_pool_unpin(tree->pool, leaf, false);
         rwlock_unlock(&tree->lock);
-        return SPEEDDB_NOTFOUND;
+        return SPEEDSQL_NOTFOUND;
     }
 
     /* Remove from offset array */
@@ -404,12 +404,12 @@ int btree_delete(btree_t* tree, const value_t* key) {
     buffer_pool_unpin(tree->pool, leaf, true);
     rwlock_unlock(&tree->lock);
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 /* Cursor implementation */
 int btree_cursor_init(btree_cursor_t* cursor, btree_t* tree) {
-    if (!cursor || !tree) return SPEEDDB_MISUSE;
+    if (!cursor || !tree) return SPEEDSQL_MISUSE;
 
     memset(cursor, 0, sizeof(*cursor));
     cursor->tree = tree;
@@ -418,11 +418,11 @@ int btree_cursor_init(btree_cursor_t* cursor, btree_t* tree) {
     cursor->valid = false;
     cursor->at_end = false;
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int btree_cursor_first(btree_cursor_t* cursor) {
-    if (!cursor || !cursor->tree) return SPEEDDB_MISUSE;
+    if (!cursor || !cursor->tree) return SPEEDSQL_MISUSE;
 
     btree_t* tree = cursor->tree;
 
@@ -431,7 +431,7 @@ int btree_cursor_first(btree_cursor_t* cursor) {
 
     while (true) {
         buffer_page_t* page = buffer_pool_get(tree->pool, tree->file, page_id);
-        if (!page) return SPEEDDB_IOERR;
+        if (!page) return SPEEDSQL_IOERR;
 
         page_header_t* hdr = (page_header_t*)page->data;
 
@@ -441,7 +441,7 @@ int btree_cursor_first(btree_cursor_t* cursor) {
             cursor->valid = get_key_count(page->data) > 0;
             cursor->at_end = !cursor->valid;
             buffer_pool_unpin(tree->pool, page, false);
-            return SPEEDDB_OK;
+            return SPEEDSQL_OK;
         }
 
         /* Get first child */
@@ -452,12 +452,12 @@ int btree_cursor_first(btree_cursor_t* cursor) {
 }
 
 int btree_cursor_next(btree_cursor_t* cursor) {
-    if (!cursor || !cursor->tree || !cursor->valid) return SPEEDDB_MISUSE;
+    if (!cursor || !cursor->tree || !cursor->valid) return SPEEDSQL_MISUSE;
 
     btree_t* tree = cursor->tree;
 
     buffer_page_t* page = buffer_pool_get(tree->pool, tree->file, cursor->current_page);
-    if (!page) return SPEEDDB_IOERR;
+    if (!page) return SPEEDSQL_IOERR;
 
     uint16_t count = get_key_count(page->data);
 
@@ -465,7 +465,7 @@ int btree_cursor_next(btree_cursor_t* cursor) {
         /* Move to next slot in same page */
         cursor->current_slot++;
         buffer_pool_unpin(tree->pool, page, false);
-        return SPEEDDB_OK;
+        return SPEEDSQL_OK;
     }
 
     /* Move to next leaf */
@@ -475,7 +475,7 @@ int btree_cursor_next(btree_cursor_t* cursor) {
     if (next == INVALID_PAGE_ID) {
         cursor->valid = false;
         cursor->at_end = true;
-        return SPEEDDB_DONE;
+        return SPEEDSQL_DONE;
     }
 
     cursor->current_page = next;
@@ -483,27 +483,27 @@ int btree_cursor_next(btree_cursor_t* cursor) {
 
     /* Verify next page has entries */
     page = buffer_pool_get(tree->pool, tree->file, next);
-    if (!page) return SPEEDDB_IOERR;
+    if (!page) return SPEEDSQL_IOERR;
 
     cursor->valid = get_key_count(page->data) > 0;
     buffer_pool_unpin(tree->pool, page, false);
 
-    return cursor->valid ? SPEEDDB_OK : SPEEDDB_DONE;
+    return cursor->valid ? SPEEDSQL_OK : SPEEDSQL_DONE;
 }
 
 int btree_cursor_key(btree_cursor_t* cursor, value_t* key) {
-    if (!cursor || !cursor->tree || !cursor->valid || !key) return SPEEDDB_MISUSE;
+    if (!cursor || !cursor->tree || !cursor->valid || !key) return SPEEDSQL_MISUSE;
 
     btree_t* tree = cursor->tree;
 
     buffer_page_t* page = buffer_pool_get(tree->pool, tree->file, cursor->current_page);
-    if (!page) return SPEEDDB_IOERR;
+    if (!page) return SPEEDSQL_IOERR;
 
     uint16_t* offsets = get_cell_offsets(page->data);
     uint8_t* cell = get_cell_data(page->data, offsets[cursor->current_slot]);
     uint16_t key_len = *(uint16_t*)cell;
 
-    key->type = SPEEDDB_TYPE_BLOB;
+    key->type = SPEEDSQL_TYPE_BLOB;
     key->size = key_len;
     key->data.str.len = key_len;
     key->data.str.data = (char*)sdb_malloc(key_len);
@@ -512,23 +512,23 @@ int btree_cursor_key(btree_cursor_t* cursor, value_t* key) {
     }
 
     buffer_pool_unpin(tree->pool, page, false);
-    return key->data.str.data ? SPEEDDB_OK : SPEEDDB_NOMEM;
+    return key->data.str.data ? SPEEDSQL_OK : SPEEDSQL_NOMEM;
 }
 
 int btree_cursor_value(btree_cursor_t* cursor, value_t* value) {
-    if (!cursor || !cursor->tree || !cursor->valid || !value) return SPEEDDB_MISUSE;
+    if (!cursor || !cursor->tree || !cursor->valid || !value) return SPEEDSQL_MISUSE;
 
     btree_t* tree = cursor->tree;
 
     buffer_page_t* page = buffer_pool_get(tree->pool, tree->file, cursor->current_page);
-    if (!page) return SPEEDDB_IOERR;
+    if (!page) return SPEEDSQL_IOERR;
 
     uint16_t* offsets = get_cell_offsets(page->data);
     uint8_t* cell = get_cell_data(page->data, offsets[cursor->current_slot]);
     uint16_t key_len = *(uint16_t*)cell;
     uint16_t value_len = *(uint16_t*)(cell + 2);
 
-    value->type = SPEEDDB_TYPE_BLOB;
+    value->type = SPEEDSQL_TYPE_BLOB;
     value->size = value_len;
     value->data.str.len = value_len;
     value->data.str.data = (char*)sdb_malloc(value_len);
@@ -537,7 +537,7 @@ int btree_cursor_value(btree_cursor_t* cursor, value_t* value) {
     }
 
     buffer_pool_unpin(tree->pool, page, false);
-    return value->data.str.data ? SPEEDDB_OK : SPEEDDB_NOMEM;
+    return value->data.str.data ? SPEEDSQL_OK : SPEEDSQL_NOMEM;
 }
 
 void btree_cursor_close(btree_cursor_t* cursor) {

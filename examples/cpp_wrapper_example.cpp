@@ -1,14 +1,14 @@
 /*
- * SpeedDB - C++ Wrapper Example
+ * SpeedSQL - C++ Wrapper Example
  *
  * Demonstrates modern C++ usage with RAII, exceptions, and type safety
  */
 
-#include "speeddb.hpp"
+#include "speedsql.hpp"
 #include <iostream>
 #include <iomanip>
 
-using namespace speeddb;
+using namespace speedsql;
 
 /* ============================================================================
  * Example 1: Basic Database Operations
@@ -146,7 +146,7 @@ void example_encryption() {
         CryptoConfig config;
         config.cipher = Cipher::AES_256_GCM;
         config.kdf = KDF::PBKDF2_SHA256;
-        config.kdf_iterations = 100000;
+        config.iterations = 100000;
 
         db.set_key("MySecurePassword123!", config);
 
@@ -321,7 +321,7 @@ void example_error_handling() {
 
 int main() {
     std::cout << "================================================\n";
-    std::cout << "SpeedDB C++ Wrapper Examples\n";
+    std::cout << "SpeedSQL C++ Wrapper Examples\n";
     std::cout << "================================================\n\n";
 
     example_basic_operations();

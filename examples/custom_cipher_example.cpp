@@ -1,12 +1,12 @@
 /*
- * SpeedDB - Custom Cipher Provider Example
+ * SpeedSQL - Custom Cipher Provider Example
  *
  * Shows how to register a custom encryption algorithm
  * for CC certification with proprietary ciphers
  */
 
-#include "speeddb.h"
-#include "speeddb_crypto.h"
+#include "speedsql.h"
+#include "speedsql_crypto.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -20,21 +20,21 @@ struct custom_cipher_ctx {
     bool initialized;
 };
 
-static int custom_init(speeddb_cipher_ctx_t** ctx,
+static int custom_init(speedsql_cipher_ctx_t** ctx,
                        const uint8_t* key, size_t key_len) {
-    if (key_len != 32) return SPEEDDB_MISUSE;
+    if (key_len != 32) return SPEEDSQL_MISUSE;
 
-    *ctx = (speeddb_cipher_ctx_t*)malloc(sizeof(custom_cipher_ctx));
-    if (!*ctx) return SPEEDDB_NOMEM;
+    *ctx = (speedsql_cipher_ctx_t*)malloc(sizeof(custom_cipher_ctx));
+    if (!*ctx) return SPEEDSQL_NOMEM;
 
     custom_cipher_ctx* c = (custom_cipher_ctx*)*ctx;
     memcpy(c->key, key, 32);
     c->initialized = true;
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static void custom_destroy(speeddb_cipher_ctx_t* ctx) {
+static void custom_destroy(speedsql_cipher_ctx_t* ctx) {
     if (ctx) {
         memset(ctx, 0, sizeof(custom_cipher_ctx));
         free(ctx);
@@ -42,7 +42,7 @@ static void custom_destroy(speeddb_cipher_ctx_t* ctx) {
 }
 
 static int custom_encrypt(
-    speeddb_cipher_ctx_t* ctx,
+    speedsql_cipher_ctx_t* ctx,
     const uint8_t* plaintext,
     size_t len,
     const uint8_t* iv,
@@ -56,7 +56,7 @@ static int custom_encrypt(
     (void)aad_len;
 
     custom_cipher_ctx* c = (custom_cipher_ctx*)ctx;
-    if (!c || !c->initialized) return SPEEDDB_MISUSE;
+    if (!c || !c->initialized) return SPEEDSQL_MISUSE;
 
     /* Simple XOR (NOT secure - demo only) */
     for (size_t i = 0; i < len; i++) {
@@ -71,11 +71,11 @@ static int custom_encrypt(
         }
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 static int custom_decrypt(
-    speeddb_cipher_ctx_t* ctx,
+    speedsql_cipher_ctx_t* ctx,
     const uint8_t* ciphertext,
     size_t len,
     const uint8_t* iv,
@@ -88,14 +88,14 @@ static int custom_decrypt(
     return custom_encrypt(ctx, ciphertext, len, iv, aad, aad_len, plaintext, nullptr);
 }
 
-static int custom_rekey(speeddb_cipher_ctx_t* ctx,
+static int custom_rekey(speedsql_cipher_ctx_t* ctx,
                         const uint8_t* new_key, size_t key_len) {
-    if (!ctx || key_len != 32) return SPEEDDB_MISUSE;
+    if (!ctx || key_len != 32) return SPEEDSQL_MISUSE;
 
     custom_cipher_ctx* c = (custom_cipher_ctx*)ctx;
     memcpy(c->key, new_key, 32);
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 static int custom_self_test(void) {
@@ -106,32 +106,32 @@ static int custom_self_test(void) {
     const uint8_t plaintext[16] = "Test data here!";
     uint8_t ciphertext[16], decrypted[16], tag[16];
 
-    speeddb_cipher_ctx_t* ctx;
+    speedsql_cipher_ctx_t* ctx;
     int rc = custom_init(&ctx, key, 32);
-    if (rc != SPEEDDB_OK) return rc;
+    if (rc != SPEEDSQL_OK) return rc;
 
     rc = custom_encrypt(ctx, plaintext, 16, nullptr, nullptr, 0, ciphertext, tag);
-    if (rc != SPEEDDB_OK) {
+    if (rc != SPEEDSQL_OK) {
         custom_destroy(ctx);
         return rc;
     }
 
     rc = custom_decrypt(ctx, ciphertext, 16, nullptr, nullptr, 0, tag, decrypted);
-    if (rc != SPEEDDB_OK) {
+    if (rc != SPEEDSQL_OK) {
         custom_destroy(ctx);
         return rc;
     }
 
     if (memcmp(plaintext, decrypted, 16) != 0) {
         custom_destroy(ctx);
-        return SPEEDDB_ERROR;
+        return SPEEDSQL_ERROR;
     }
 
     custom_destroy(ctx);
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static void custom_zeroize(speeddb_cipher_ctx_t* ctx) {
+static void custom_zeroize(speedsql_cipher_ctx_t* ctx) {
     if (ctx) {
         custom_cipher_ctx* c = (custom_cipher_ctx*)ctx;
         memset(c->key, 0, 32);
@@ -140,10 +140,10 @@ static void custom_zeroize(speeddb_cipher_ctx_t* ctx) {
 }
 
 /* Custom cipher provider definition */
-static const speeddb_cipher_provider_t my_custom_cipher = {
+static const speedsql_cipher_provider_t my_custom_cipher = {
     .name = "CUSTOM-XOR-256",
     .version = "1.0.0-demo",
-    .cipher_id = (speeddb_cipher_t)(SPEEDDB_CIPHER_CUSTOM + 1),  /* Custom ID > 100 */
+    .cipher_id = (speedsql_cipher_t)(SPEEDSQL_CIPHER_CUSTOM + 1),  /* Custom ID > 100 */
     .key_size = 32,
     .iv_size = 0,
     .tag_size = 16,
@@ -162,14 +162,14 @@ static const speeddb_cipher_provider_t my_custom_cipher = {
  * ============================================================================ */
 
 int main() {
-    printf("SpeedDB Custom Cipher Example\n");
-    printf("=============================\n\n");
+    printf("SpeedSQL Custom Cipher Example\n");
+    printf("==============================\n\n");
 
     /* Step 1: Register custom cipher */
     printf("1. Registering custom cipher...\n");
 
-    int rc = speeddb_register_cipher(&my_custom_cipher);
-    if (rc == SPEEDDB_OK) {
+    int rc = speedsql_register_cipher(&my_custom_cipher);
+    if (rc == SPEEDSQL_OK) {
         printf("   Registered: %s v%s (ID: %d)\n",
                my_custom_cipher.name,
                my_custom_cipher.version,
@@ -182,8 +182,8 @@ int main() {
     /* Step 2: Verify registration */
     printf("\n2. Verifying registration...\n");
 
-    const speeddb_cipher_provider_t* provider =
-        speeddb_get_cipher((speeddb_cipher_t)(SPEEDDB_CIPHER_CUSTOM + 1));
+    const speedsql_cipher_provider_t* provider =
+        speedsql_get_cipher((speedsql_cipher_t)(SPEEDSQL_CIPHER_CUSTOM + 1));
 
     if (provider) {
         printf("   Found: %s\n", provider->name);
@@ -197,7 +197,7 @@ int main() {
     printf("\n3. Running self-test...\n");
 
     rc = provider->self_test();
-    if (rc == SPEEDDB_OK) {
+    if (rc == SPEEDSQL_OK) {
         printf("   Self-test PASSED\n");
     } else {
         printf("   Self-test FAILED\n");
@@ -207,38 +207,38 @@ int main() {
     /* Step 4: Use custom cipher with database */
     printf("\n4. Using custom cipher with database...\n");
 
-    speeddb* db;
-    speeddb_open("custom_cipher.sdb", &db);
+    speedsql* db;
+    speedsql_open("custom_cipher.sdb", &db);
 
-    speeddb_crypto_config_t config = {};
-    config.cipher = (speeddb_cipher_t)(SPEEDDB_CIPHER_CUSTOM + 1);
-    config.kdf = SPEEDDB_KDF_PBKDF2_SHA256;
+    speedsql_crypto_config_t config = {};
+    config.cipher = (speedsql_cipher_t)(SPEEDSQL_CIPHER_CUSTOM + 1);
+    config.kdf = SPEEDSQL_KDF_PBKDF2_SHA256;
     config.kdf_iterations = 10000;
 
-    rc = speeddb_key_v2(db, "custom_password", 15, &config);
-    if (rc == SPEEDDB_OK) {
+    rc = speedsql_key_v2(db, "custom_password", 15, &config);
+    if (rc == SPEEDSQL_OK) {
         printf("   Database encrypted with custom cipher\n");
     }
 
-    speeddb_exec(db,
+    speedsql_exec(db,
         "CREATE TABLE custom_data (id INTEGER, value BLOB)",
         nullptr, nullptr, nullptr);
 
-    speeddb_close(db);
+    speedsql_close(db);
 
     /* Step 5: List all ciphers including custom */
     printf("\n5. All registered ciphers:\n");
 
     int count = 0;
-    speeddb_list_ciphers(nullptr, &count);
+    speedsql_list_ciphers(nullptr, &count);
 
-    speeddb_cipher_t* ciphers = new speeddb_cipher_t[count];
-    speeddb_list_ciphers(ciphers, &count);
+    speedsql_cipher_t* ciphers = new speedsql_cipher_t[count];
+    speedsql_list_ciphers(ciphers, &count);
 
     for (int i = 0; i < count; i++) {
-        const speeddb_cipher_provider_t* p = speeddb_get_cipher(ciphers[i]);
+        const speedsql_cipher_provider_t* p = speedsql_get_cipher(ciphers[i]);
         if (p) {
-            const char* type = (ciphers[i] >= SPEEDDB_CIPHER_CUSTOM) ? "[CUSTOM]" : "[BUILT-IN]";
+            const char* type = (ciphers[i] >= SPEEDSQL_CIPHER_CUSTOM) ? "[CUSTOM]" : "[BUILT-IN]";
             printf("   %s %s\n", type, p->name);
         }
     }
@@ -248,8 +248,8 @@ int main() {
     /* Step 6: Unregister (optional) */
     printf("\n6. Unregistering custom cipher...\n");
 
-    rc = speeddb_unregister_cipher((speeddb_cipher_t)(SPEEDDB_CIPHER_CUSTOM + 1));
-    if (rc == SPEEDDB_OK) {
+    rc = speedsql_unregister_cipher((speedsql_cipher_t)(SPEEDSQL_CIPHER_CUSTOM + 1));
+    if (rc == SPEEDSQL_OK) {
         printf("   Unregistered successfully\n");
     }
 

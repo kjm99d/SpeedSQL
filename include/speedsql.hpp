@@ -1,15 +1,15 @@
 /*
- * SpeedDB - Modern C++ Wrapper
+ * SpeedSQL - Modern C++ Wrapper
  *
- * RAII-based C++ interface for SpeedDB
+ * RAII-based C++ interface for SpeedSQL
  * Provides type-safe, exception-safe access to the database
  */
 
-#ifndef SPEEDDB_HPP
-#define SPEEDDB_HPP
+#ifndef SPEEDSQL_HPP
+#define SPEEDSQL_HPP
 
-#include "speeddb.h"
-#include "speeddb_crypto.h"
+#include "speedsql.h"
+#include "speedsql_crypto.h"
 
 #include <string>
 #include <string_view>
@@ -21,7 +21,7 @@
 #include <variant>
 #include <span>
 
-namespace speeddb {
+namespace speedsql {
 
 /* ============================================================================
  * Exception Classes
@@ -72,21 +72,21 @@ class Row;
  * ============================================================================ */
 
 enum class Cipher {
-    None = SPEEDDB_CIPHER_NONE,
-    AES_256_GCM = SPEEDDB_CIPHER_AES_256_GCM,
-    AES_256_CBC = SPEEDDB_CIPHER_AES_256_CBC,
-    ARIA_256_GCM = SPEEDDB_CIPHER_ARIA_256_GCM,
-    ARIA_256_CBC = SPEEDDB_CIPHER_ARIA_256_CBC,
-    SEED_CBC = SPEEDDB_CIPHER_SEED_CBC,
-    ChaCha20_Poly1305 = SPEEDDB_CIPHER_CHACHA20_POLY1305
+    None = SPEEDSQL_CIPHER_NONE,
+    AES_256_GCM = SPEEDSQL_CIPHER_AES_256_GCM,
+    AES_256_CBC = SPEEDSQL_CIPHER_AES_256_CBC,
+    ARIA_256_GCM = SPEEDSQL_CIPHER_ARIA_256_GCM,
+    ARIA_256_CBC = SPEEDSQL_CIPHER_ARIA_256_CBC,
+    SEED_CBC = SPEEDSQL_CIPHER_SEED_CBC,
+    ChaCha20_Poly1305 = SPEEDSQL_CIPHER_CHACHA20_POLY1305
 };
 
 enum class KDF {
-    None = SPEEDDB_KDF_NONE,
-    PBKDF2_SHA256 = SPEEDDB_KDF_PBKDF2_SHA256,
-    PBKDF2_SHA512 = SPEEDDB_KDF_PBKDF2_SHA512,
-    Argon2id = SPEEDDB_KDF_ARGON2ID,
-    Scrypt = SPEEDDB_KDF_SCRYPT
+    None = SPEEDSQL_KDF_NONE,
+    PBKDF2_SHA256 = SPEEDSQL_KDF_PBKDF2_SHA256,
+    PBKDF2_SHA512 = SPEEDSQL_KDF_PBKDF2_SHA512,
+    Argon2id = SPEEDSQL_KDF_ARGON2ID,
+    Scrypt = SPEEDSQL_KDF_SCRYPT
 };
 
 struct CryptoConfig {
@@ -96,10 +96,10 @@ struct CryptoConfig {
     uint32_t memory_kb = 65536;      // For Argon2
     uint32_t parallelism = 4;        // For Argon2
 
-    speeddb_crypto_config_t to_c() const {
-        speeddb_crypto_config_t config = {};
-        config.cipher = static_cast<speeddb_cipher_t>(cipher);
-        config.kdf = static_cast<speeddb_kdf_t>(kdf);
+    speedsql_crypto_config_t to_c() const {
+        speedsql_crypto_config_t config = {};
+        config.cipher = static_cast<speedsql_cipher_t>(cipher);
+        config.kdf = static_cast<speedsql_kdf_t>(kdf);
         config.kdf_iterations = iterations;
         config.kdf_memory = memory_kb;
         config.kdf_parallelism = parallelism;
@@ -137,27 +137,27 @@ public:
 
     /* Binding parameters */
     Statement& bind(int index, std::nullptr_t) {
-        check(speeddb_bind_null(stmt_, index));
+        check(speedsql_bind_null(stmt_, index));
         return *this;
     }
 
     Statement& bind(int index, int value) {
-        check(speeddb_bind_int(stmt_, index, value));
+        check(speedsql_bind_int(stmt_, index, value));
         return *this;
     }
 
     Statement& bind(int index, int64_t value) {
-        check(speeddb_bind_int64(stmt_, index, value));
+        check(speedsql_bind_int64(stmt_, index, value));
         return *this;
     }
 
     Statement& bind(int index, double value) {
-        check(speeddb_bind_double(stmt_, index, value));
+        check(speedsql_bind_double(stmt_, index, value));
         return *this;
     }
 
     Statement& bind(int index, std::string_view value) {
-        check(speeddb_bind_text(stmt_, index, value.data(),
+        check(speedsql_bind_text(stmt_, index, value.data(),
                                  static_cast<int>(value.size()), nullptr));
         return *this;
     }
@@ -171,7 +171,7 @@ public:
     }
 
     Statement& bind(int index, std::span<const uint8_t> value) {
-        check(speeddb_bind_blob(stmt_, index, value.data(),
+        check(speedsql_bind_blob(stmt_, index, value.data(),
                                  static_cast<int>(value.size()), nullptr));
         return *this;
     }
@@ -198,9 +198,9 @@ public:
 
     /* Execution */
     bool step() {
-        int rc = speeddb_step(stmt_);
-        if (rc == SPEEDDB_ROW) return true;
-        if (rc == SPEEDDB_DONE) return false;
+        int rc = speedsql_step(stmt_);
+        if (rc == SPEEDSQL_ROW) return true;
+        if (rc == SPEEDSQL_DONE) return false;
         throw StatementException(rc, "Step failed");
     }
 
@@ -209,49 +209,49 @@ public:
     }
 
     Statement& reset() {
-        check(speeddb_reset(stmt_));
+        check(speedsql_reset(stmt_));
         return *this;
     }
 
     /* Column access */
     int column_count() const {
-        return speeddb_column_count(stmt_);
+        return speedsql_column_count(stmt_);
     }
 
     std::string column_name(int col) const {
-        const char* name = speeddb_column_name(stmt_, col);
+        const char* name = speedsql_column_name(stmt_, col);
         return name ? name : "";
     }
 
     int column_type(int col) const {
-        return speeddb_column_type(stmt_, col);
+        return speedsql_column_type(stmt_, col);
     }
 
     bool is_null(int col) const {
-        return column_type(col) == SPEEDDB_TYPE_NULL;
+        return column_type(col) == SPEEDSQL_TYPE_NULL;
     }
 
     int get_int(int col) const {
-        return speeddb_column_int(stmt_, col);
+        return speedsql_column_int(stmt_, col);
     }
 
     int64_t get_int64(int col) const {
-        return speeddb_column_int64(stmt_, col);
+        return speedsql_column_int64(stmt_, col);
     }
 
     double get_double(int col) const {
-        return speeddb_column_double(stmt_, col);
+        return speedsql_column_double(stmt_, col);
     }
 
     std::string get_text(int col) const {
-        const unsigned char* text = speeddb_column_text(stmt_, col);
-        int len = speeddb_column_bytes(stmt_, col);
+        const unsigned char* text = speedsql_column_text(stmt_, col);
+        int len = speedsql_column_bytes(stmt_, col);
         return text ? std::string(reinterpret_cast<const char*>(text), len) : "";
     }
 
     Blob get_blob(int col) const {
-        const void* data = speeddb_column_blob(stmt_, col);
-        int len = speeddb_column_bytes(stmt_, col);
+        const void* data = speedsql_column_blob(stmt_, col);
+        int len = speedsql_column_bytes(stmt_, col);
         if (data && len > 0) {
             const uint8_t* bytes = static_cast<const uint8_t*>(data);
             return Blob(bytes, bytes + len);
@@ -261,15 +261,15 @@ public:
 
     Value get_value(int col) const {
         switch (column_type(col)) {
-            case SPEEDDB_TYPE_NULL:
+            case SPEEDSQL_TYPE_NULL:
                 return Null{};
-            case SPEEDDB_TYPE_INT:
+            case SPEEDSQL_TYPE_INT:
                 return get_int64(col);
-            case SPEEDDB_TYPE_FLOAT:
+            case SPEEDSQL_TYPE_FLOAT:
                 return get_double(col);
-            case SPEEDDB_TYPE_TEXT:
+            case SPEEDSQL_TYPE_TEXT:
                 return get_text(col);
-            case SPEEDDB_TYPE_BLOB:
+            case SPEEDSQL_TYPE_BLOB:
                 return get_blob(col);
             default:
                 return Null{};
@@ -342,24 +342,24 @@ public:
 private:
     friend class Database;
 
-    explicit Statement(speeddb_stmt* stmt, speeddb* db)
+    explicit Statement(speedsql_stmt* stmt, speedsql* db)
         : stmt_(stmt), db_(db) {}
 
     void finalize() {
         if (stmt_) {
-            speeddb_finalize(stmt_);
+            speedsql_finalize(stmt_);
             stmt_ = nullptr;
         }
     }
 
     void check(int rc) {
-        if (rc != SPEEDDB_OK) {
-            throw StatementException(rc, speeddb_errmsg(db_));
+        if (rc != SPEEDSQL_OK) {
+            throw StatementException(rc, speedsql_errmsg(db_));
         }
     }
 
-    speeddb_stmt* stmt_;
-    speeddb* db_;
+    speedsql_stmt* stmt_;
+    speedsql* db_;
 };
 
 /* ============================================================================
@@ -379,15 +379,15 @@ public:
 
     ~Transaction() {
         if (db_ && !committed_) {
-            speeddb_rollback(db_);
+            speedsql_rollback(db_);
         }
     }
 
     void commit() {
         if (db_ && !committed_) {
-            int rc = speeddb_commit(db_);
-            if (rc != SPEEDDB_OK) {
-                throw DatabaseException(rc, speeddb_errmsg(db_));
+            int rc = speedsql_commit(db_);
+            if (rc != SPEEDSQL_OK) {
+                throw DatabaseException(rc, speedsql_errmsg(db_));
             }
             committed_ = true;
         }
@@ -395,7 +395,7 @@ public:
 
     void rollback() {
         if (db_ && !committed_) {
-            speeddb_rollback(db_);
+            speedsql_rollback(db_);
             committed_ = true;
         }
     }
@@ -403,14 +403,14 @@ public:
 private:
     friend class Database;
 
-    explicit Transaction(speeddb* db) : db_(db), committed_(false) {
-        int rc = speeddb_begin(db_);
-        if (rc != SPEEDDB_OK) {
-            throw DatabaseException(rc, speeddb_errmsg(db_));
+    explicit Transaction(speedsql* db) : db_(db), committed_(false) {
+        int rc = speedsql_begin(db_);
+        if (rc != SPEEDSQL_OK) {
+            throw DatabaseException(rc, speedsql_errmsg(db_));
         }
     }
 
-    speeddb* db_;
+    speedsql* db_;
     bool committed_;
 };
 
@@ -422,11 +422,11 @@ class Database {
 public:
     /* Open flags */
     enum OpenFlags {
-        ReadOnly    = SPEEDDB_OPEN_READONLY,
-        ReadWrite   = SPEEDDB_OPEN_READWRITE,
-        Create      = SPEEDDB_OPEN_CREATE,
-        Memory      = SPEEDDB_OPEN_MEMORY,
-        WAL         = SPEEDDB_OPEN_WAL
+        ReadOnly    = SPEEDSQL_OPEN_READONLY,
+        ReadWrite   = SPEEDSQL_OPEN_READWRITE,
+        Create      = SPEEDSQL_OPEN_CREATE,
+        Memory      = SPEEDSQL_OPEN_MEMORY,
+        WAL         = SPEEDSQL_OPEN_WAL
     };
 
     /* Constructors */
@@ -460,15 +460,15 @@ public:
     /* Connection management */
     void open(const std::string& filename, int flags = ReadWrite | Create) {
         close();
-        int rc = speeddb_open_v2(filename.c_str(), &db_, flags, nullptr);
-        if (rc != SPEEDDB_OK) {
+        int rc = speedsql_open_v2(filename.c_str(), &db_, flags, nullptr);
+        if (rc != SPEEDSQL_OK) {
             throw DatabaseException(rc, "Failed to open database: " + filename);
         }
     }
 
     void close() {
         if (db_) {
-            speeddb_close(db_);
+            speedsql_close(db_);
             db_ = nullptr;
         }
     }
@@ -481,45 +481,45 @@ public:
     void set_key(std::string_view password,
                  const CryptoConfig& config = CryptoConfig()) {
         auto c_config = config.to_c();
-        int rc = speeddb_key_v2(db_, password.data(),
+        int rc = speedsql_key_v2(db_, password.data(),
                                  static_cast<int>(password.size()), &c_config);
-        if (rc != SPEEDDB_OK) {
-            throw CryptoException(rc, speeddb_errmsg(db_));
+        if (rc != SPEEDSQL_OK) {
+            throw CryptoException(rc, speedsql_errmsg(db_));
         }
     }
 
     void rekey(std::string_view new_password) {
-        int rc = speeddb_rekey(db_, new_password.data(),
+        int rc = speedsql_rekey(db_, new_password.data(),
                                 static_cast<int>(new_password.size()));
-        if (rc != SPEEDDB_OK) {
-            throw CryptoException(rc, speeddb_errmsg(db_));
+        if (rc != SPEEDSQL_OK) {
+            throw CryptoException(rc, speedsql_errmsg(db_));
         }
     }
 
     void remove_encryption() {
-        int rc = speeddb_decrypt(db_);
-        if (rc != SPEEDDB_OK) {
-            throw CryptoException(rc, speeddb_errmsg(db_));
+        int rc = speedsql_decrypt(db_);
+        if (rc != SPEEDSQL_OK) {
+            throw CryptoException(rc, speedsql_errmsg(db_));
         }
     }
 
     /* SQL Execution */
     void execute(const std::string& sql) {
         char* errmsg = nullptr;
-        int rc = speeddb_exec(db_, sql.c_str(), nullptr, nullptr, &errmsg);
-        if (rc != SPEEDDB_OK) {
-            std::string msg = errmsg ? errmsg : speeddb_errmsg(db_);
-            if (errmsg) speeddb_free(errmsg);
+        int rc = speedsql_exec(db_, sql.c_str(), nullptr, nullptr, &errmsg);
+        if (rc != SPEEDSQL_OK) {
+            std::string msg = errmsg ? errmsg : speedsql_errmsg(db_);
+            if (errmsg) speedsql_free(errmsg);
             throw DatabaseException(rc, msg);
         }
     }
 
     Statement prepare(const std::string& sql) {
-        speeddb_stmt* stmt = nullptr;
-        int rc = speeddb_prepare(db_, sql.c_str(),
+        speedsql_stmt* stmt = nullptr;
+        int rc = speedsql_prepare(db_, sql.c_str(),
                                   static_cast<int>(sql.size()), &stmt, nullptr);
-        if (rc != SPEEDDB_OK) {
-            throw DatabaseException(rc, speeddb_errmsg(db_));
+        if (rc != SPEEDSQL_OK) {
+            throw DatabaseException(rc, speedsql_errmsg(db_));
         }
         return Statement(stmt, db_);
     }
@@ -575,31 +575,31 @@ public:
 
     /* Utility */
     int changes() const {
-        return speeddb_changes(db_);
+        return speedsql_changes(db_);
     }
 
     int64_t total_changes() const {
-        return speeddb_total_changes(db_);
+        return speedsql_total_changes(db_);
     }
 
     int64_t last_insert_rowid() const {
-        return speeddb_last_insert_rowid(db_);
+        return speedsql_last_insert_rowid(db_);
     }
 
     std::string error_message() const {
-        return speeddb_errmsg(db_);
+        return speedsql_errmsg(db_);
     }
 
     int error_code() const {
-        return speeddb_errcode(db_);
+        return speedsql_errcode(db_);
     }
 
     /* Raw handle access (for advanced use) */
-    speeddb* handle() { return db_; }
-    const speeddb* handle() const { return db_; }
+    speedsql* handle() { return db_; }
+    const speedsql* handle() const { return db_; }
 
 private:
-    speeddb* db_;
+    speedsql* db_;
 };
 
 /* ============================================================================
@@ -607,17 +607,17 @@ private:
  * ============================================================================ */
 
 inline std::string version() {
-    return SPEEDDB_VERSION;
+    return SPEEDSQL_VERSION;
 }
 
 inline std::string crypto_version() {
-    return speeddb_crypto_version();
+    return speedsql_crypto_version();
 }
 
 inline bool run_crypto_self_test() {
-    return speeddb_crypto_self_test() == SPEEDDB_OK;
+    return speedsql_crypto_self_test() == SPEEDSQL_OK;
 }
 
-} // namespace speeddb
+} // namespace speedsql
 
-#endif // SPEEDDB_HPP
+#endif // SPEEDSQL_HPP

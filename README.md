@@ -1,4 +1,4 @@
-# SpeedDB
+# SpeedSQL
 
 Ultra-fast file-based local database engine designed to overcome SQLite's limitations.
 
@@ -26,8 +26,8 @@ Ultra-fast file-based local database engine designed to overcome SQLite's limita
 
 ## SQLite Limitations Addressed
 
-| Limitation | SQLite | SpeedDB |
-|------------|--------|---------|
+| Limitation | SQLite | SpeedSQL |
+|------------|--------|----------|
 | Page Size | 4KB fixed | 16KB default, configurable |
 | Max File Size | 281TB (theoretical) | Unlimited (64-bit addressing) |
 | Concurrent Writes | Single writer | Optimized locking |
@@ -62,11 +62,11 @@ ctest -C Release
 
 ```bash
 cmake .. \
-    -DSPEEDDB_BUILD_SHARED=ON \
-    -DSPEEDDB_BUILD_STATIC=ON \
-    -DSPEEDDB_BUILD_TESTS=ON \
-    -DSPEEDDB_BUILD_EXAMPLES=ON \
-    -DSPEEDDB_BUILD_BENCHMARK=OFF
+    -DSPEEDSQL_BUILD_SHARED=ON \
+    -DSPEEDSQL_BUILD_STATIC=ON \
+    -DSPEEDSQL_BUILD_TESTS=ON \
+    -DSPEEDSQL_BUILD_EXAMPLES=ON \
+    -DSPEEDSQL_BUILD_BENCHMARK=OFF
 ```
 
 ## Usage
@@ -74,37 +74,63 @@ cmake .. \
 ### C API
 
 ```c
-#include "speeddb.h"
+#include "speedsql.h"
 
 int main() {
-    speeddb* db;
+    speedsql* db;
 
     // Open database
-    speeddb_open("mydata.sdb", &db);
+    speedsql_open("mydata.sdb", &db);
 
     // Create table
-    speeddb_exec(db,
+    speedsql_exec(db,
         "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)",
         NULL, NULL, NULL);
 
     // Insert data
-    speeddb_exec(db,
+    speedsql_exec(db,
         "INSERT INTO users VALUES (1, 'Alice', 30)",
         NULL, NULL, NULL);
 
     // Query with prepared statement
-    speeddb_stmt* stmt;
-    speeddb_prepare(db, "SELECT * FROM users WHERE age > ?", -1, &stmt, NULL);
-    speeddb_bind_int(stmt, 1, 25);
+    speedsql_stmt* stmt;
+    speedsql_prepare(db, "SELECT * FROM users WHERE age > ?", -1, &stmt, NULL);
+    speedsql_bind_int(stmt, 1, 25);
 
-    while (speeddb_step(stmt) == SPEEDDB_ROW) {
-        int id = speeddb_column_int(stmt, 0);
-        const char* name = (const char*)speeddb_column_text(stmt, 1);
+    while (speedsql_step(stmt) == SPEEDSQL_ROW) {
+        int id = speedsql_column_int(stmt, 0);
+        const char* name = (const char*)speedsql_column_text(stmt, 1);
         printf("User: %d - %s\n", id, name);
     }
 
-    speeddb_finalize(stmt);
-    speeddb_close(db);
+    speedsql_finalize(stmt);
+    speedsql_close(db);
+
+    return 0;
+}
+```
+
+### C++ Wrapper
+
+```cpp
+#include "speedsql.hpp"
+using namespace speedsql;
+
+int main() {
+    Database db("mydata.sdb");
+
+    db.exec("CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)");
+    db.exec("INSERT INTO users VALUES (1, 'Alice', 30)");
+
+    // RAII Transaction
+    db.transaction([&]() {
+        db.exec("UPDATE users SET age = 31 WHERE id = 1");
+    });
+
+    // Range-based for loop
+    for (auto& row : db.query("SELECT * FROM users WHERE age > ?", 25)) {
+        std::cout << std::get<std::string>(row[1]) << "\n";
+    }
 
     return 0;
 }
@@ -113,46 +139,46 @@ int main() {
 ### Transactions
 
 ```c
-speeddb_begin(db);
+speedsql_begin(db);
 
-int rc = speeddb_exec(db, "UPDATE accounts SET balance = balance - 100 WHERE id = 1", NULL, NULL, NULL);
-if (rc == SPEEDDB_OK) {
-    rc = speeddb_exec(db, "UPDATE accounts SET balance = balance + 100 WHERE id = 2", NULL, NULL, NULL);
+int rc = speedsql_exec(db, "UPDATE accounts SET balance = balance - 100 WHERE id = 1", NULL, NULL, NULL);
+if (rc == SPEEDSQL_OK) {
+    rc = speedsql_exec(db, "UPDATE accounts SET balance = balance + 100 WHERE id = 2", NULL, NULL, NULL);
 }
 
-if (rc == SPEEDDB_OK) {
-    speeddb_commit(db);
+if (rc == SPEEDSQL_OK) {
+    speedsql_commit(db);
 } else {
-    speeddb_rollback(db);
+    speedsql_rollback(db);
 }
 ```
 
 ### Encryption
 
 ```c
-#include "speeddb.h"
-#include "speeddb_crypto.h"
+#include "speedsql.h"
+#include "speedsql_crypto.h"
 
 int main() {
-    speeddb* db;
+    speedsql* db;
 
     // Open database
-    speeddb_open("secure.sdb", &db);
+    speedsql_open("secure.sdb", &db);
 
     // Configure encryption
-    speeddb_crypto_config_t config = {
-        .cipher = SPEEDDB_CIPHER_AES_256_GCM,  // or ARIA_256_GCM for Korean CC
-        .kdf = SPEEDDB_KDF_PBKDF2_SHA256,
+    speedsql_crypto_config_t config = {
+        .cipher = SPEEDSQL_CIPHER_AES_256_GCM,  // or ARIA_256_GCM for Korean CC
+        .kdf = SPEEDSQL_KDF_PBKDF2_SHA256,
         .kdf_iterations = 100000
     };
 
     // Set encryption key
-    speeddb_key_v2(db, "my_password", 11, &config);
+    speedsql_key_v2(db, "my_password", 11, &config);
 
     // Use database normally - encryption is transparent
-    speeddb_exec(db, "CREATE TABLE secrets (id INTEGER, data TEXT)", NULL, NULL, NULL);
+    speedsql_exec(db, "CREATE TABLE secrets (id INTEGER, data TEXT)", NULL, NULL, NULL);
 
-    speeddb_close(db);
+    speedsql_close(db);
     return 0;
 }
 ```
@@ -161,22 +187,23 @@ int main() {
 
 | Cipher | Key Size | Mode | Use Case |
 |--------|----------|------|----------|
-| `SPEEDDB_CIPHER_NONE` | - | - | Development, testing |
-| `SPEEDDB_CIPHER_AES_256_GCM` | 256-bit | AEAD | General use, NIST compliant |
-| `SPEEDDB_CIPHER_AES_256_CBC` | 256-bit | CBC+HMAC | Legacy compatibility |
-| `SPEEDDB_CIPHER_ARIA_256_GCM` | 256-bit | AEAD | Korean CC certification |
-| `SPEEDDB_CIPHER_SEED_CBC` | 128-bit | CBC | Korean legacy systems |
-| `SPEEDDB_CIPHER_CHACHA20_POLY1305` | 256-bit | AEAD | Mobile, software-only |
+| `SPEEDSQL_CIPHER_NONE` | - | - | Development, testing |
+| `SPEEDSQL_CIPHER_AES_256_GCM` | 256-bit | AEAD | General use, NIST compliant |
+| `SPEEDSQL_CIPHER_AES_256_CBC` | 256-bit | CBC+HMAC | Legacy compatibility |
+| `SPEEDSQL_CIPHER_ARIA_256_GCM` | 256-bit | AEAD | Korean CC certification |
+| `SPEEDSQL_CIPHER_SEED_CBC` | 128-bit | CBC | Korean legacy systems |
+| `SPEEDSQL_CIPHER_CHACHA20_POLY1305` | 256-bit | AEAD | Mobile, software-only |
 
 ## Architecture
 
 ```
-SpeedDB/
+SpeedSQL/
 ├── include/
-│   ├── speeddb.h           # Public C API
-│   ├── speeddb_crypto.h    # Encryption API
-│   ├── speeddb_types.h     # Type definitions
-│   └── speeddb_internal.h  # Internal structures
+│   ├── speedsql.h           # Public C API
+│   ├── speedsql.hpp         # Modern C++ wrapper
+│   ├── speedsql_crypto.h    # Encryption API
+│   ├── speedsql_types.h     # Type definitions
+│   └── speedsql_internal.h  # Internal structures
 ├── src/
 │   ├── core/
 │   │   └── database.cpp    # Connection management
@@ -227,6 +254,7 @@ SpeedDB/
 - [x] B+Tree index (basic)
 - [x] SQL lexer & parser
 - [x] Encryption module (AES, ARIA, SEED, ChaCha20)
+- [x] Modern C++ wrapper
 - [ ] Query executor
 - [ ] Schema management
 

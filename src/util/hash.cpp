@@ -1,8 +1,8 @@
 /*
- * SpeedDB - Hash and Checksum Functions
+ * SpeedSQL - Hash and Checksum Functions
  */
 
-#include "speeddb_internal.h"
+#include "speedsql_internal.h"
 
 /* CRC32 table */
 static uint32_t crc32_table[256];

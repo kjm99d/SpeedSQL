@@ -1,13 +1,13 @@
 /*
- * SpeedDB - Internal structures and functions
+ * SpeedSQL - Internal structures and functions
  * Not for public use
  */
 
-#ifndef SPEEDDB_INTERNAL_H
-#define SPEEDDB_INTERNAL_H
+#ifndef SPEEDSQL_INTERNAL_H
+#define SPEEDSQL_INTERNAL_H
 
-#include "speeddb.h"
-#include "speeddb_types.h"
+#include "speedsql.h"
+#include "speedsql_types.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -177,7 +177,7 @@ int wal_recover(wal_t* wal, buffer_pool_t* pool, file_t* db_file);
  * Database Connection Structure
  * ============================================================================ */
 
-struct speeddb {
+struct speedsql {
     file_t db_file;              /* Main database file */
     wal_t* wal;                  /* Write-ahead log */
     buffer_pool_t* buffer_pool;  /* Page cache */
@@ -382,8 +382,8 @@ struct plan_node {
     } data;
 };
 
-struct speeddb_stmt {
-    speeddb* db;                 /* Parent connection */
+struct speedsql_stmt {
+    speedsql* db;                /* Parent connection */
     char* sql;                   /* Original SQL */
     parsed_stmt_t* parsed;       /* Parsed statement */
     plan_node_t* plan;           /* Execution plan */
@@ -502,12 +502,12 @@ typedef struct {
     lexer_t lexer;
     token_t current;
     token_t previous;
-    speeddb* db;
+    speedsql* db;
     char error[256];
     bool had_error;
 } parser_t;
 
-void parser_init(parser_t* parser, speeddb* db, const char* sql);
+void parser_init(parser_t* parser, speedsql* db, const char* sql);
 parsed_stmt_t* parser_parse(parser_t* parser);
 void parsed_stmt_free(parsed_stmt_t* stmt);
 
@@ -515,12 +515,12 @@ void parsed_stmt_free(parsed_stmt_t* stmt);
  * Query Optimizer & Executor
  * ============================================================================ */
 
-plan_node_t* optimizer_plan(speeddb* db, parsed_stmt_t* stmt);
+plan_node_t* optimizer_plan(speedsql* db, parsed_stmt_t* stmt);
 void plan_free(plan_node_t* plan);
 
-int executor_init(speeddb_stmt* stmt);
-int executor_step(speeddb_stmt* stmt);
-void executor_reset(speeddb_stmt* stmt);
+int executor_init(speedsql_stmt* stmt);
+int executor_step(speedsql_stmt* stmt);
+void executor_reset(speedsql_stmt* stmt);
 
 /* ============================================================================
  * Value Operations
@@ -545,6 +545,6 @@ uint64_t xxhash64(const void* data, size_t len);
 uint64_t get_timestamp_us(void);
 
 /* Set error on connection */
-void sdb_set_error(speeddb* db, int code, const char* fmt, ...);
+void sdb_set_error(speedsql* db, int code, const char* fmt, ...);
 
-#endif /* SPEEDDB_INTERNAL_H */
+#endif /* SPEEDSQL_INTERNAL_H */

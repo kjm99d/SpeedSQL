@@ -1,12 +1,12 @@
 /*
- * SpeedDB - SEED Cipher Implementation
+ * SpeedSQL - SEED Cipher Implementation
  *
  * SEED is a Korean national standard block cipher (TTAS.KO-12.0004/R1)
  * 128-bit block cipher developed by KISA (Korea Information Security Agency)
  */
 
-#include "speeddb_internal.h"
-#include "speeddb_crypto.h"
+#include "speedsql_internal.h"
+#include "speedsql_crypto.h"
 #include <string.h>
 
 #define SEED_BLOCK_SIZE 16
@@ -48,7 +48,7 @@ static const uint32_t KC[16] = {
     0x779b99e3, 0xef3733c6, 0xde6e678d, 0xbcdccf1b
 };
 
-struct speeddb_cipher_ctx {
+struct speedsql_cipher_ctx {
     uint32_t round_keys[32];
     uint8_t key[16];
     bool initialized;
@@ -79,7 +79,7 @@ static void seed_f(uint32_t* c, uint32_t* d,
 }
 
 /* Key schedule */
-static void seed_key_schedule(speeddb_cipher_ctx_t* ctx, const uint8_t* key) {
+static void seed_key_schedule(speedsql_cipher_ctx_t* ctx, const uint8_t* key) {
     uint32_t a, b, c, d;
     uint32_t t0, t1;
 
@@ -112,7 +112,7 @@ static void seed_key_schedule(speeddb_cipher_ctx_t* ctx, const uint8_t* key) {
 }
 
 /* Encrypt a block */
-static void seed_encrypt_block(speeddb_cipher_ctx_t* ctx,
+static void seed_encrypt_block(speedsql_cipher_ctx_t* ctx,
                                 const uint8_t* in, uint8_t* out) {
     uint32_t l0, l1, r0, r1;
     uint32_t t0, t1;
@@ -166,30 +166,30 @@ static void seed_encrypt_block(speeddb_cipher_ctx_t* ctx,
 }
 
 /* Provider interface */
-static int seed_cbc_init(speeddb_cipher_ctx_t** ctx,
+static int seed_cbc_init(speedsql_cipher_ctx_t** ctx,
                           const uint8_t* key, size_t key_len) {
-    if (key_len != 16) return SPEEDDB_MISUSE;
+    if (key_len != 16) return SPEEDSQL_MISUSE;
 
-    *ctx = (speeddb_cipher_ctx_t*)speeddb_secure_malloc(sizeof(speeddb_cipher_ctx_t));
-    if (!*ctx) return SPEEDDB_NOMEM;
+    *ctx = (speedsql_cipher_ctx_t*)speedsql_secure_malloc(sizeof(speedsql_cipher_ctx_t));
+    if (!*ctx) return SPEEDSQL_NOMEM;
 
-    memset(*ctx, 0, sizeof(speeddb_cipher_ctx_t));
+    memset(*ctx, 0, sizeof(speedsql_cipher_ctx_t));
     memcpy((*ctx)->key, key, 16);
     seed_key_schedule(*ctx, key);
     (*ctx)->initialized = true;
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static void seed_cbc_destroy(speeddb_cipher_ctx_t* ctx) {
+static void seed_cbc_destroy(speedsql_cipher_ctx_t* ctx) {
     if (ctx) {
-        speeddb_secure_zero(ctx, sizeof(*ctx));
-        speeddb_secure_free(ctx, sizeof(*ctx));
+        speedsql_secure_zero(ctx, sizeof(*ctx));
+        speedsql_secure_free(ctx, sizeof(*ctx));
     }
 }
 
 static int seed_cbc_encrypt(
-    speeddb_cipher_ctx_t* ctx,
+    speedsql_cipher_ctx_t* ctx,
     const uint8_t* plaintext,
     size_t plaintext_len,
     const uint8_t* iv,
@@ -202,7 +202,7 @@ static int seed_cbc_encrypt(
     (void)aad_len;
     (void)tag;
 
-    if (!ctx || !ctx->initialized) return SPEEDDB_MISUSE;
+    if (!ctx || !ctx->initialized) return SPEEDSQL_MISUSE;
 
     uint8_t prev[16];
     memcpy(prev, iv, 16);
@@ -224,11 +224,11 @@ static int seed_cbc_encrypt(
         memcpy(prev, &ciphertext[i], 16);
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 static int seed_cbc_decrypt(
-    speeddb_cipher_ctx_t* ctx,
+    speedsql_cipher_ctx_t* ctx,
     const uint8_t* ciphertext,
     size_t ciphertext_len,
     const uint8_t* iv,
@@ -241,7 +241,7 @@ static int seed_cbc_decrypt(
     (void)aad_len;
     (void)tag;
 
-    if (!ctx || !ctx->initialized) return SPEEDDB_MISUSE;
+    if (!ctx || !ctx->initialized) return SPEEDSQL_MISUSE;
 
     /* Note: SEED decryption would require inverse key schedule */
     /* This is a simplified placeholder */
@@ -250,18 +250,18 @@ static int seed_cbc_decrypt(
     (void)iv;
     (void)plaintext;
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static int seed_cbc_rekey(speeddb_cipher_ctx_t* ctx,
+static int seed_cbc_rekey(speedsql_cipher_ctx_t* ctx,
                           const uint8_t* new_key, size_t key_len) {
-    if (!ctx || key_len != 16) return SPEEDDB_MISUSE;
+    if (!ctx || key_len != 16) return SPEEDSQL_MISUSE;
 
-    speeddb_secure_zero(ctx->key, 16);
+    speedsql_secure_zero(ctx->key, 16);
     memcpy(ctx->key, new_key, 16);
     seed_key_schedule(ctx, new_key);
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 static int seed_cbc_self_test(void) {
@@ -276,9 +276,9 @@ static int seed_cbc_self_test(void) {
         0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff
     };
 
-    speeddb_cipher_ctx_t* ctx;
+    speedsql_cipher_ctx_t* ctx;
     int rc = seed_cbc_init(&ctx, key, 16);
-    if (rc != SPEEDDB_OK) return rc;
+    if (rc != SPEEDSQL_OK) return rc;
 
     uint8_t ciphertext[16];
     rc = seed_cbc_encrypt(ctx, plaintext, 16, iv, nullptr, 0, ciphertext, nullptr);
@@ -287,17 +287,17 @@ static int seed_cbc_self_test(void) {
     return rc;
 }
 
-static void seed_cbc_zeroize(speeddb_cipher_ctx_t* ctx) {
+static void seed_cbc_zeroize(speedsql_cipher_ctx_t* ctx) {
     if (ctx) {
-        speeddb_secure_zero(ctx, sizeof(*ctx));
+        speedsql_secure_zero(ctx, sizeof(*ctx));
         ctx->initialized = false;
     }
 }
 
-const speeddb_cipher_provider_t g_cipher_seed_cbc = {
+extern "C" const speedsql_cipher_provider_t g_cipher_seed_cbc = {
     .name = "SEED-CBC",
     .version = "1.0.0",
-    .cipher_id = SPEEDDB_CIPHER_SEED_CBC,
+    .cipher_id = SPEEDSQL_CIPHER_SEED_CBC,
     .key_size = 16,
     .iv_size = 16,
     .tag_size = 0,

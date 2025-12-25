@@ -1,39 +1,39 @@
 /*
- * SpeedDB - No Encryption Cipher (Passthrough)
+ * SpeedSQL - No Encryption Cipher (Passthrough)
  *
  * Provides a cipher interface that does no encryption.
  * Useful for development, testing, and non-sensitive data.
  */
 
-#include "speeddb_internal.h"
-#include "speeddb_crypto.h"
+#include "speedsql_internal.h"
+#include "speedsql_crypto.h"
 #include <string.h>
 
 /* Context for no-encryption (minimal state) */
-struct speeddb_cipher_ctx {
+struct speedsql_cipher_ctx {
     bool initialized;
 };
 
-static int cipher_none_init(speeddb_cipher_ctx_t** ctx,
+static int cipher_none_init(speedsql_cipher_ctx_t** ctx,
                             const uint8_t* key, size_t key_len) {
     (void)key;
     (void)key_len;
 
-    *ctx = (speeddb_cipher_ctx_t*)sdb_calloc(1, sizeof(speeddb_cipher_ctx_t));
-    if (!*ctx) return SPEEDDB_NOMEM;
+    *ctx = (speedsql_cipher_ctx_t*)sdb_calloc(1, sizeof(speedsql_cipher_ctx_t));
+    if (!*ctx) return SPEEDSQL_NOMEM;
 
     (*ctx)->initialized = true;
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static void cipher_none_destroy(speeddb_cipher_ctx_t* ctx) {
+static void cipher_none_destroy(speedsql_cipher_ctx_t* ctx) {
     if (ctx) {
         sdb_free(ctx);
     }
 }
 
 static int cipher_none_encrypt(
-    speeddb_cipher_ctx_t* ctx,
+    speedsql_cipher_ctx_t* ctx,
     const uint8_t* plaintext,
     size_t plaintext_len,
     const uint8_t* iv,
@@ -50,11 +50,11 @@ static int cipher_none_encrypt(
 
     /* Just copy - no encryption */
     memcpy(ciphertext, plaintext, plaintext_len);
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 static int cipher_none_decrypt(
-    speeddb_cipher_ctx_t* ctx,
+    speedsql_cipher_ctx_t* ctx,
     const uint8_t* ciphertext,
     size_t ciphertext_len,
     const uint8_t* iv,
@@ -71,33 +71,33 @@ static int cipher_none_decrypt(
 
     /* Just copy - no decryption */
     memcpy(plaintext, ciphertext, ciphertext_len);
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static int cipher_none_rekey(speeddb_cipher_ctx_t* ctx,
+static int cipher_none_rekey(speedsql_cipher_ctx_t* ctx,
                               const uint8_t* new_key, size_t key_len) {
     (void)ctx;
     (void)new_key;
     (void)key_len;
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 static int cipher_none_self_test(void) {
     /* Always passes - no crypto to test */
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static void cipher_none_zeroize(speeddb_cipher_ctx_t* ctx) {
+static void cipher_none_zeroize(speedsql_cipher_ctx_t* ctx) {
     if (ctx) {
         ctx->initialized = false;
     }
 }
 
 /* Global provider instance */
-const speeddb_cipher_provider_t g_cipher_none = {
+extern "C" const speedsql_cipher_provider_t g_cipher_none = {
     .name = "NONE",
     .version = "1.0.0",
-    .cipher_id = SPEEDDB_CIPHER_NONE,
+    .cipher_id = SPEEDSQL_CIPHER_NONE,
     .key_size = 0,
     .iv_size = 0,
     .tag_size = 0,

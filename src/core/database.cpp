@@ -1,11 +1,11 @@
 /*
- * SpeedDB - Database connection implementation
+ * SpeedSQL - Database connection implementation
  */
 
-#include "speeddb_internal.h"
+#include "speedsql_internal.h"
 #include <stdarg.h>
 
-static const char DB_MAGIC[] = "SpeedDB format 1";
+static const char DB_MAGIC[] = "SpeedSQL format 1";
 static const uint32_t DB_VERSION = 1;
 
 /* Memory allocation wrappers */
@@ -34,7 +34,7 @@ char* sdb_strdup(const char* str) {
 }
 
 /* Error handling */
-void sdb_set_error(speeddb* db, int code, const char* fmt, ...) {
+void sdb_set_error(speedsql* db, int code, const char* fmt, ...) {
     if (!db) return;
     db->errcode = code;
 
@@ -45,12 +45,12 @@ void sdb_set_error(speeddb* db, int code, const char* fmt, ...) {
 }
 
 /* Initialize a new database file */
-static int init_new_database(speeddb* db) {
+static int init_new_database(speedsql* db) {
     /* Initialize header */
     memset(&db->header, 0, sizeof(db->header));
     memcpy(db->header.magic, DB_MAGIC, sizeof(DB_MAGIC));
     db->header.version = DB_VERSION;
-    db->header.page_size = SPEEDDB_PAGE_SIZE;
+    db->header.page_size = SPEEDSQL_PAGE_SIZE;
     db->header.page_count = 1;  /* Just the header page */
     db->header.freelist_head = INVALID_PAGE_ID;
     db->header.freelist_count = 0;
@@ -61,78 +61,78 @@ static int init_new_database(speeddb* db) {
     db->header.checksum = crc32(&db->header, offsetof(db_header_t, checksum));
 
     /* Write header to file */
-    uint8_t page[SPEEDDB_PAGE_SIZE] = {0};
+    uint8_t page[SPEEDSQL_PAGE_SIZE] = {0};
     memcpy(page, &db->header, sizeof(db->header));
 
-    int rc = file_write(&db->db_file, 0, page, SPEEDDB_PAGE_SIZE);
-    if (rc != SPEEDDB_OK) {
-        sdb_set_error(db, SPEEDDB_IOERR, "Failed to write database header");
-        return SPEEDDB_IOERR;
+    int rc = file_write(&db->db_file, 0, page, SPEEDSQL_PAGE_SIZE);
+    if (rc != SPEEDSQL_OK) {
+        sdb_set_error(db, SPEEDSQL_IOERR, "Failed to write database header");
+        return SPEEDSQL_IOERR;
     }
 
     rc = file_sync(&db->db_file);
-    if (rc != SPEEDDB_OK) {
-        sdb_set_error(db, SPEEDDB_IOERR, "Failed to sync database file");
-        return SPEEDDB_IOERR;
+    if (rc != SPEEDSQL_OK) {
+        sdb_set_error(db, SPEEDSQL_IOERR, "Failed to sync database file");
+        return SPEEDSQL_IOERR;
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 /* Read and validate database header */
-static int read_database_header(speeddb* db) {
-    uint8_t page[SPEEDDB_PAGE_SIZE];
+static int read_database_header(speedsql* db) {
+    uint8_t page[SPEEDSQL_PAGE_SIZE];
 
-    int rc = file_read(&db->db_file, 0, page, SPEEDDB_PAGE_SIZE);
-    if (rc != SPEEDDB_OK) {
-        sdb_set_error(db, SPEEDDB_IOERR, "Failed to read database header");
-        return SPEEDDB_IOERR;
+    int rc = file_read(&db->db_file, 0, page, SPEEDSQL_PAGE_SIZE);
+    if (rc != SPEEDSQL_OK) {
+        sdb_set_error(db, SPEEDSQL_IOERR, "Failed to read database header");
+        return SPEEDSQL_IOERR;
     }
 
     memcpy(&db->header, page, sizeof(db->header));
 
     /* Validate magic */
     if (memcmp(db->header.magic, DB_MAGIC, sizeof(DB_MAGIC)) != 0) {
-        sdb_set_error(db, SPEEDDB_CORRUPT, "Invalid database file format");
-        return SPEEDDB_CORRUPT;
+        sdb_set_error(db, SPEEDSQL_CORRUPT, "Invalid database file format");
+        return SPEEDSQL_CORRUPT;
     }
 
     /* Validate version */
     if (db->header.version > DB_VERSION) {
-        sdb_set_error(db, SPEEDDB_CORRUPT, "Database version %u not supported", db->header.version);
-        return SPEEDDB_CORRUPT;
+        sdb_set_error(db, SPEEDSQL_CORRUPT, "Database version %u not supported", db->header.version);
+        return SPEEDSQL_CORRUPT;
     }
 
     /* Validate checksum */
     uint32_t expected = crc32(&db->header, offsetof(db_header_t, checksum));
     if (db->header.checksum != expected) {
-        sdb_set_error(db, SPEEDDB_CORRUPT, "Database header checksum mismatch");
-        return SPEEDDB_CORRUPT;
+        sdb_set_error(db, SPEEDSQL_CORRUPT, "Database header checksum mismatch");
+        return SPEEDSQL_CORRUPT;
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 /* Public API: Open database */
-SPEEDDB_API int speeddb_open(const char* filename, speeddb** db_out) {
-    return speeddb_open_v2(filename, db_out,
-        SPEEDDB_OPEN_READWRITE | SPEEDDB_OPEN_CREATE, nullptr);
+SPEEDSQL_API int speedsql_open(const char* filename, speedsql** db_out) {
+    return speedsql_open_v2(filename, db_out,
+        SPEEDSQL_OPEN_READWRITE | SPEEDSQL_OPEN_CREATE, nullptr);
 }
 
-SPEEDDB_API int speeddb_open_v2(const char* filename, speeddb** db_out,
+SPEEDSQL_API int speedsql_open_v2(const char* filename, speedsql** db_out,
                                  int flags, const char* vfs) {
     (void)vfs;  /* Reserved for future VFS support */
 
     if (!filename || !db_out) {
-        return SPEEDDB_MISUSE;
+        return SPEEDSQL_MISUSE;
     }
 
     *db_out = nullptr;
 
     /* Allocate connection structure */
-    speeddb* db = (speeddb*)sdb_calloc(1, sizeof(speeddb));
+    speedsql* db = (speedsql*)sdb_calloc(1, sizeof(speedsql));
     if (!db) {
-        return SPEEDDB_NOMEM;
+        return SPEEDSQL_NOMEM;
     }
 
     /* Initialize synchronization */
@@ -140,38 +140,38 @@ SPEEDDB_API int speeddb_open_v2(const char* filename, speeddb** db_out,
     rwlock_init(&db->schema_lock);
 
     db->flags = flags;
-    db->cache_size = SPEEDDB_DEFAULT_CACHE_SIZE;
-    db->errcode = SPEEDDB_OK;
+    db->cache_size = SPEEDSQL_DEFAULT_CACHE_SIZE;
+    db->errcode = SPEEDSQL_OK;
     db->errmsg[0] = '\0';
 
     /* Open database file */
     int file_flags = 0;
-    if (flags & SPEEDDB_OPEN_READONLY) {
+    if (flags & SPEEDSQL_OPEN_READONLY) {
         file_flags = 0;  /* Read only */
-    } else if (flags & SPEEDDB_OPEN_READWRITE) {
+    } else if (flags & SPEEDSQL_OPEN_READWRITE) {
         file_flags = 1;  /* Read-write */
     }
-    if (flags & SPEEDDB_OPEN_CREATE) {
+    if (flags & SPEEDSQL_OPEN_CREATE) {
         file_flags |= 2;  /* Create if not exists */
     }
 
     int rc = file_open(&db->db_file, filename, file_flags);
-    if (rc != SPEEDDB_OK) {
-        sdb_set_error(db, SPEEDDB_CANTOPEN, "Cannot open database file: %s", filename);
+    if (rc != SPEEDSQL_OK) {
+        sdb_set_error(db, SPEEDSQL_CANTOPEN, "Cannot open database file: %s", filename);
         mutex_destroy(&db->lock);
         rwlock_destroy(&db->schema_lock);
         sdb_free(db);
-        return SPEEDDB_CANTOPEN;
+        return SPEEDSQL_CANTOPEN;
     }
 
     /* Check if this is a new database */
-    uint64_t file_size;
-    file_size(&db->db_file, &file_size);
+    uint64_t db_file_size;
+    file_size(&db->db_file, &db_file_size);
 
-    if (file_size == 0) {
+    if (db_file_size == 0) {
         /* New database - initialize */
         rc = init_new_database(db);
-        if (rc != SPEEDDB_OK) {
+        if (rc != SPEEDSQL_OK) {
             file_close(&db->db_file);
             mutex_destroy(&db->lock);
             rwlock_destroy(&db->schema_lock);
@@ -181,7 +181,7 @@ SPEEDDB_API int speeddb_open_v2(const char* filename, speeddb** db_out,
     } else {
         /* Existing database - read header */
         rc = read_database_header(db);
-        if (rc != SPEEDDB_OK) {
+        if (rc != SPEEDSQL_OK) {
             file_close(&db->db_file);
             mutex_destroy(&db->lock);
             rwlock_destroy(&db->schema_lock);
@@ -197,11 +197,11 @@ SPEEDDB_API int speeddb_open_v2(const char* filename, speeddb** db_out,
         mutex_destroy(&db->lock);
         rwlock_destroy(&db->schema_lock);
         sdb_free(db);
-        return SPEEDDB_NOMEM;
+        return SPEEDSQL_NOMEM;
     }
 
     rc = buffer_pool_init(db->buffer_pool, db->cache_size, db->header.page_size);
-    if (rc != SPEEDDB_OK) {
+    if (rc != SPEEDSQL_OK) {
         file_close(&db->db_file);
         mutex_destroy(&db->lock);
         rwlock_destroy(&db->schema_lock);
@@ -211,13 +211,13 @@ SPEEDDB_API int speeddb_open_v2(const char* filename, speeddb** db_out,
     }
 
     /* Initialize WAL if enabled */
-    if (flags & SPEEDDB_OPEN_WAL) {
+    if (flags & SPEEDSQL_OPEN_WAL) {
         db->wal = (wal_t*)sdb_malloc(sizeof(wal_t));
         if (db->wal) {
             char wal_path[1024];
             snprintf(wal_path, sizeof(wal_path), "%s-wal", filename);
             rc = wal_init(db->wal, wal_path);
-            if (rc != SPEEDDB_OK) {
+            if (rc != SPEEDSQL_OK) {
                 sdb_free(db->wal);
                 db->wal = nullptr;
                 /* Continue without WAL */
@@ -226,11 +226,11 @@ SPEEDDB_API int speeddb_open_v2(const char* filename, speeddb** db_out,
     }
 
     *db_out = db;
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-SPEEDDB_API int speeddb_close(speeddb* db) {
-    if (!db) return SPEEDDB_MISUSE;
+SPEEDSQL_API int speedsql_close(speedsql* db) {
+    if (!db) return SPEEDSQL_MISUSE;
 
     /* Flush buffer pool */
     if (db->buffer_pool) {
@@ -276,54 +276,54 @@ SPEEDDB_API int speeddb_close(speeddb* db) {
     rwlock_destroy(&db->schema_lock);
 
     sdb_free(db);
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-SPEEDDB_API const char* speeddb_errmsg(speeddb* db) {
+SPEEDSQL_API const char* speedsql_errmsg(speedsql* db) {
     if (!db) return "Invalid database handle";
     return db->errmsg[0] ? db->errmsg : "No error";
 }
 
-SPEEDDB_API int speeddb_errcode(speeddb* db) {
-    if (!db) return SPEEDDB_MISUSE;
+SPEEDSQL_API int speedsql_errcode(speedsql* db) {
+    if (!db) return SPEEDSQL_MISUSE;
     return db->errcode;
 }
 
 /* Transaction API */
-SPEEDDB_API int speeddb_begin(speeddb* db) {
-    if (!db) return SPEEDDB_MISUSE;
+SPEEDSQL_API int speedsql_begin(speedsql* db) {
+    if (!db) return SPEEDSQL_MISUSE;
 
     mutex_lock(&db->lock);
 
     if (db->txn_state != TXN_NONE) {
         mutex_unlock(&db->lock);
-        sdb_set_error(db, SPEEDDB_MISUSE, "Transaction already in progress");
-        return SPEEDDB_MISUSE;
+        sdb_set_error(db, SPEEDSQL_MISUSE, "Transaction already in progress");
+        return SPEEDSQL_MISUSE;
     }
 
     db->current_txn = ++db->header.txn_id;
     db->txn_state = TXN_READ;  /* Upgrade to write on first write */
 
     mutex_unlock(&db->lock);
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-SPEEDDB_API int speeddb_commit(speeddb* db) {
-    if (!db) return SPEEDDB_MISUSE;
+SPEEDSQL_API int speedsql_commit(speedsql* db) {
+    if (!db) return SPEEDSQL_MISUSE;
 
     mutex_lock(&db->lock);
 
     if (db->txn_state == TXN_NONE) {
         mutex_unlock(&db->lock);
-        return SPEEDDB_OK;  /* No transaction, nothing to do */
+        return SPEEDSQL_OK;  /* No transaction, nothing to do */
     }
 
-    int rc = SPEEDDB_OK;
+    int rc = SPEEDSQL_OK;
 
     /* Commit WAL if enabled */
     if (db->wal && db->txn_state == TXN_WRITE) {
         rc = wal_commit(db->wal, db->current_txn);
-        if (rc != SPEEDDB_OK) {
+        if (rc != SPEEDSQL_OK) {
             mutex_unlock(&db->lock);
             return rc;
         }
@@ -341,14 +341,14 @@ SPEEDDB_API int speeddb_commit(speeddb* db) {
     return rc;
 }
 
-SPEEDDB_API int speeddb_rollback(speeddb* db) {
-    if (!db) return SPEEDDB_MISUSE;
+SPEEDSQL_API int speedsql_rollback(speedsql* db) {
+    if (!db) return SPEEDSQL_MISUSE;
 
     mutex_lock(&db->lock);
 
     if (db->txn_state == TXN_NONE) {
         mutex_unlock(&db->lock);
-        return SPEEDDB_OK;
+        return SPEEDSQL_OK;
     }
 
     /* Rollback WAL if enabled */
@@ -362,25 +362,25 @@ SPEEDDB_API int speeddb_rollback(speeddb* db) {
     db->current_txn = 0;
 
     mutex_unlock(&db->lock);
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 /* Utility functions */
-SPEEDDB_API int speeddb_changes(speeddb* db) {
+SPEEDSQL_API int speedsql_changes(speedsql* db) {
     if (!db) return 0;
     return (int)(db->total_changes & 0x7FFFFFFF);
 }
 
-SPEEDDB_API int64_t speeddb_total_changes(speeddb* db) {
+SPEEDSQL_API int64_t speedsql_total_changes(speedsql* db) {
     if (!db) return 0;
     return db->total_changes;
 }
 
-SPEEDDB_API int64_t speeddb_last_insert_rowid(speeddb* db) {
+SPEEDSQL_API int64_t speedsql_last_insert_rowid(speedsql* db) {
     if (!db) return 0;
     return db->last_rowid;
 }
 
-SPEEDDB_API void speeddb_free(void* ptr) {
+SPEEDSQL_API void speedsql_free(void* ptr) {
     sdb_free(ptr);
 }

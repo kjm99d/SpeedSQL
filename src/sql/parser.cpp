@@ -1,12 +1,12 @@
 /*
- * SpeedDB - SQL Parser
+ * SpeedSQL - SQL Parser
  *
  * Recursive descent parser for SQL statements
  */
 
-#include "speeddb_internal.h"
+#include "speedsql_internal.h"
 
-void parser_init(parser_t* parser, speeddb* db, const char* sql) {
+void parser_init(parser_t* parser, speedsql* db, const char* sql) {
     lexer_init(&parser->lexer, sql);
     parser->db = db;
     parser->error[0] = '\0';
@@ -74,7 +74,7 @@ static expr_t* parse_primary(parser_t* parser) {
     if (match(parser, TOK_INTEGER)) {
         expr_t* expr = create_expr(EXPR_LITERAL);
         if (expr) {
-            expr->data.literal.type = SPEEDDB_TYPE_INT;
+            expr->data.literal.type = SPEEDSQL_TYPE_INT;
             expr->data.literal.data.i64 = parser->previous.value.int_val;
         }
         return expr;
@@ -83,7 +83,7 @@ static expr_t* parse_primary(parser_t* parser) {
     if (match(parser, TOK_FLOAT)) {
         expr_t* expr = create_expr(EXPR_LITERAL);
         if (expr) {
-            expr->data.literal.type = SPEEDDB_TYPE_FLOAT;
+            expr->data.literal.type = SPEEDSQL_TYPE_FLOAT;
             expr->data.literal.data.f64 = parser->previous.value.float_val;
         }
         return expr;
@@ -92,7 +92,7 @@ static expr_t* parse_primary(parser_t* parser) {
     if (match(parser, TOK_STRING)) {
         expr_t* expr = create_expr(EXPR_LITERAL);
         if (expr) {
-            expr->data.literal.type = SPEEDDB_TYPE_TEXT;
+            expr->data.literal.type = SPEEDSQL_TYPE_TEXT;
             /* Remove quotes */
             int len = parser->previous.length - 2;
             expr->data.literal.data.str.data = (char*)sdb_malloc(len + 1);
@@ -109,7 +109,7 @@ static expr_t* parse_primary(parser_t* parser) {
     if (match(parser, TOK_NULL)) {
         expr_t* expr = create_expr(EXPR_LITERAL);
         if (expr) {
-            expr->data.literal.type = SPEEDDB_TYPE_NULL;
+            expr->data.literal.type = SPEEDSQL_TYPE_NULL;
         }
         return expr;
     }
@@ -642,7 +642,7 @@ static parsed_stmt_t* parse_create_table(parser_t* parser) {
         /* Parse type */
         consume(parser, TOK_IDENT, "Expected column type");
         /* For now, store type as generic - later parse specific types */
-        col->type = SPEEDDB_TYPE_TEXT;  /* Default */
+        col->type = SPEEDSQL_TYPE_TEXT;  /* Default */
 
         /* Parse constraints */
         while (!check(parser, TOK_COMMA) && !check(parser, TOK_RPAREN)) {
@@ -723,8 +723,8 @@ static void expr_free(expr_t* expr) {
 
     switch (expr->type) {
         case EXPR_LITERAL:
-            if (expr->data.literal.type == SPEEDDB_TYPE_TEXT ||
-                expr->data.literal.type == SPEEDDB_TYPE_BLOB) {
+            if (expr->data.literal.type == SPEEDSQL_TYPE_TEXT ||
+                expr->data.literal.type == SPEEDSQL_TYPE_BLOB) {
                 sdb_free(expr->data.literal.data.str.data);
             }
             break;

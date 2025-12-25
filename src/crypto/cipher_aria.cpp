@@ -1,5 +1,5 @@
 /*
- * SpeedDB - ARIA-256 Cipher Implementation
+ * SpeedSQL - ARIA-256 Cipher Implementation
  *
  * ARIA is the Korean national standard block cipher (KS X 1213)
  * Required for CC (Common Criteria) certification in Korea
@@ -9,8 +9,8 @@
  * - ARIA-256-CBC (Cipher Block Chaining with HMAC)
  */
 
-#include "speeddb_internal.h"
-#include "speeddb_crypto.h"
+#include "speedsql_internal.h"
+#include "speedsql_crypto.h"
 #include <string.h>
 
 /* ============================================================================
@@ -164,13 +164,13 @@ static const uint8_t SB4[256] = {
 };
 
 /* ARIA context */
-struct speeddb_cipher_ctx {
+struct speedsql_cipher_ctx {
     uint8_t enc_round_keys[17][16];  /* Encryption round keys */
     uint8_t dec_round_keys[17][16];  /* Decryption round keys */
     uint8_t key[32];
     int rounds;
     bool initialized;
-    speeddb_cipher_t mode;
+    speedsql_cipher_t mode;
 };
 
 /* Substitution layer type 1 (odd rounds) */
@@ -256,7 +256,7 @@ static void xor_128(uint8_t* out, const uint8_t* a, const uint8_t* b) {
 }
 
 /* Key expansion for ARIA-256 */
-static void aria_key_expansion(speeddb_cipher_ctx_t* ctx, const uint8_t* key) {
+static void aria_key_expansion(speedsql_cipher_ctx_t* ctx, const uint8_t* key) {
     uint8_t kl[16], kr[16];
     uint8_t w0[16], w1[16], w2[16], w3[16];
     uint8_t ck1[16], ck2[16], ck3[16];
@@ -342,7 +342,7 @@ static void aria_key_expansion(speeddb_cipher_ctx_t* ctx, const uint8_t* key) {
 }
 
 /* Encrypt a single block */
-static void aria_encrypt_block(speeddb_cipher_ctx_t* ctx, const uint8_t* in, uint8_t* out) {
+static void aria_encrypt_block(speedsql_cipher_ctx_t* ctx, const uint8_t* in, uint8_t* out) {
     uint8_t state[16];
     memcpy(state, in, 16);
 
@@ -370,32 +370,32 @@ static void aria_encrypt_block(speeddb_cipher_ctx_t* ctx, const uint8_t* in, uin
  * ARIA-256-GCM Provider
  * ============================================================================ */
 
-static int aria_gcm_init(speeddb_cipher_ctx_t** ctx,
+static int aria_gcm_init(speedsql_cipher_ctx_t** ctx,
                           const uint8_t* key, size_t key_len) {
-    if (key_len != 32) return SPEEDDB_MISUSE;
+    if (key_len != 32) return SPEEDSQL_MISUSE;
 
-    *ctx = (speeddb_cipher_ctx_t*)speeddb_secure_malloc(sizeof(speeddb_cipher_ctx_t));
-    if (!*ctx) return SPEEDDB_NOMEM;
+    *ctx = (speedsql_cipher_ctx_t*)speedsql_secure_malloc(sizeof(speedsql_cipher_ctx_t));
+    if (!*ctx) return SPEEDSQL_NOMEM;
 
-    memset(*ctx, 0, sizeof(speeddb_cipher_ctx_t));
+    memset(*ctx, 0, sizeof(speedsql_cipher_ctx_t));
     memcpy((*ctx)->key, key, 32);
     aria_key_expansion(*ctx, key);
     (*ctx)->initialized = true;
-    (*ctx)->mode = SPEEDDB_CIPHER_ARIA_256_GCM;
+    (*ctx)->mode = SPEEDSQL_CIPHER_ARIA_256_GCM;
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static void aria_gcm_destroy(speeddb_cipher_ctx_t* ctx) {
+static void aria_gcm_destroy(speedsql_cipher_ctx_t* ctx) {
     if (ctx) {
-        speeddb_secure_zero(ctx, sizeof(*ctx));
-        speeddb_secure_free(ctx, sizeof(*ctx));
+        speedsql_secure_zero(ctx, sizeof(*ctx));
+        speedsql_secure_free(ctx, sizeof(*ctx));
     }
 }
 
 /* GCM mode implementation (similar to AES-GCM but with ARIA) */
 static int aria_gcm_encrypt(
-    speeddb_cipher_ctx_t* ctx,
+    speedsql_cipher_ctx_t* ctx,
     const uint8_t* plaintext,
     size_t plaintext_len,
     const uint8_t* iv,
@@ -404,7 +404,7 @@ static int aria_gcm_encrypt(
     uint8_t* ciphertext,
     uint8_t* tag
 ) {
-    if (!ctx || !ctx->initialized) return SPEEDDB_MISUSE;
+    if (!ctx || !ctx->initialized) return SPEEDSQL_MISUSE;
 
     /* CTR mode encryption with ARIA */
     uint8_t counter[16] = {0};
@@ -431,11 +431,11 @@ static int aria_gcm_encrypt(
     (void)aad;
     (void)aad_len;
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 static int aria_gcm_decrypt(
-    speeddb_cipher_ctx_t* ctx,
+    speedsql_cipher_ctx_t* ctx,
     const uint8_t* ciphertext,
     size_t ciphertext_len,
     const uint8_t* iv,
@@ -449,15 +449,15 @@ static int aria_gcm_decrypt(
                             iv, aad, aad_len, plaintext, (uint8_t*)tag);
 }
 
-static int aria_gcm_rekey(speeddb_cipher_ctx_t* ctx,
+static int aria_gcm_rekey(speedsql_cipher_ctx_t* ctx,
                           const uint8_t* new_key, size_t key_len) {
-    if (!ctx || key_len != 32) return SPEEDDB_MISUSE;
+    if (!ctx || key_len != 32) return SPEEDSQL_MISUSE;
 
-    speeddb_secure_zero(ctx->key, 32);
+    speedsql_secure_zero(ctx->key, 32);
     memcpy(ctx->key, new_key, 32);
     aria_key_expansion(ctx, new_key);
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 static int aria_gcm_self_test(void) {
@@ -474,44 +474,44 @@ static int aria_gcm_self_test(void) {
         0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff
     };
 
-    speeddb_cipher_ctx_t* ctx;
+    speedsql_cipher_ctx_t* ctx;
     int rc = aria_gcm_init(&ctx, key, 32);
-    if (rc != SPEEDDB_OK) return rc;
+    if (rc != SPEEDSQL_OK) return rc;
 
     uint8_t ciphertext[16], tag[16], decrypted[16];
     rc = aria_gcm_encrypt(ctx, plaintext, 16, iv, nullptr, 0, ciphertext, tag);
-    if (rc != SPEEDDB_OK) {
+    if (rc != SPEEDSQL_OK) {
         aria_gcm_destroy(ctx);
         return rc;
     }
 
     rc = aria_gcm_decrypt(ctx, ciphertext, 16, iv, nullptr, 0, tag, decrypted);
-    if (rc != SPEEDDB_OK) {
+    if (rc != SPEEDSQL_OK) {
         aria_gcm_destroy(ctx);
         return rc;
     }
 
     if (memcmp(plaintext, decrypted, 16) != 0) {
         aria_gcm_destroy(ctx);
-        return SPEEDDB_ERROR;
+        return SPEEDSQL_ERROR;
     }
 
     aria_gcm_destroy(ctx);
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static void aria_gcm_zeroize(speeddb_cipher_ctx_t* ctx) {
+static void aria_gcm_zeroize(speedsql_cipher_ctx_t* ctx) {
     if (ctx) {
-        speeddb_secure_zero(ctx, sizeof(*ctx));
+        speedsql_secure_zero(ctx, sizeof(*ctx));
         ctx->initialized = false;
     }
 }
 
 /* Global provider instances */
-const speeddb_cipher_provider_t g_cipher_aria_256_gcm = {
+extern "C" const speedsql_cipher_provider_t g_cipher_aria_256_gcm = {
     .name = "ARIA-256-GCM",
     .version = "1.0.0",
-    .cipher_id = SPEEDDB_CIPHER_ARIA_256_GCM,
+    .cipher_id = SPEEDSQL_CIPHER_ARIA_256_GCM,
     .key_size = 32,
     .iv_size = 12,
     .tag_size = 16,
@@ -525,10 +525,10 @@ const speeddb_cipher_provider_t g_cipher_aria_256_gcm = {
     .zeroize = aria_gcm_zeroize
 };
 
-const speeddb_cipher_provider_t g_cipher_aria_256_cbc = {
+extern "C" const speedsql_cipher_provider_t g_cipher_aria_256_cbc = {
     .name = "ARIA-256-CBC",
     .version = "1.0.0",
-    .cipher_id = SPEEDDB_CIPHER_ARIA_256_CBC,
+    .cipher_id = SPEEDSQL_CIPHER_ARIA_256_CBC,
     .key_size = 32,
     .iv_size = 16,
     .tag_size = 32,

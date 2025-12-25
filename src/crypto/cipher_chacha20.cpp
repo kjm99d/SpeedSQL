@@ -1,13 +1,13 @@
 /*
- * SpeedDB - ChaCha20-Poly1305 Cipher Implementation
+ * SpeedSQL - ChaCha20-Poly1305 Cipher Implementation
  *
  * Modern authenticated encryption cipher
  * - Fast in software (no need for AES-NI)
  * - IETF RFC 8439 compliant
  */
 
-#include "speeddb_internal.h"
-#include "speeddb_crypto.h"
+#include "speedsql_internal.h"
+#include "speedsql_crypto.h"
 #include <string.h>
 
 #define CHACHA20_KEY_SIZE 32
@@ -15,7 +15,7 @@
 #define CHACHA20_BLOCK_SIZE 64
 #define POLY1305_TAG_SIZE 16
 
-struct speeddb_cipher_ctx {
+struct speedsql_cipher_ctx {
     uint8_t key[32];
     bool initialized;
 };
@@ -261,28 +261,28 @@ static void poly1305_finish(poly1305_ctx* ctx, uint8_t tag[16]) {
  * ChaCha20-Poly1305 AEAD Provider
  * ============================================================================ */
 
-static int chacha20_poly1305_init(speeddb_cipher_ctx_t** ctx,
+static int chacha20_poly1305_init(speedsql_cipher_ctx_t** ctx,
                                    const uint8_t* key, size_t key_len) {
-    if (key_len != 32) return SPEEDDB_MISUSE;
+    if (key_len != 32) return SPEEDSQL_MISUSE;
 
-    *ctx = (speeddb_cipher_ctx_t*)speeddb_secure_malloc(sizeof(speeddb_cipher_ctx_t));
-    if (!*ctx) return SPEEDDB_NOMEM;
+    *ctx = (speedsql_cipher_ctx_t*)speedsql_secure_malloc(sizeof(speedsql_cipher_ctx_t));
+    if (!*ctx) return SPEEDSQL_NOMEM;
 
     memcpy((*ctx)->key, key, 32);
     (*ctx)->initialized = true;
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static void chacha20_poly1305_destroy(speeddb_cipher_ctx_t* ctx) {
+static void chacha20_poly1305_destroy(speedsql_cipher_ctx_t* ctx) {
     if (ctx) {
-        speeddb_secure_zero(ctx, sizeof(*ctx));
-        speeddb_secure_free(ctx, sizeof(*ctx));
+        speedsql_secure_zero(ctx, sizeof(*ctx));
+        speedsql_secure_free(ctx, sizeof(*ctx));
     }
 }
 
 static int chacha20_poly1305_encrypt(
-    speeddb_cipher_ctx_t* ctx,
+    speedsql_cipher_ctx_t* ctx,
     const uint8_t* plaintext,
     size_t plaintext_len,
     const uint8_t* nonce,
@@ -291,7 +291,7 @@ static int chacha20_poly1305_encrypt(
     uint8_t* ciphertext,
     uint8_t* tag
 ) {
-    if (!ctx || !ctx->initialized) return SPEEDDB_MISUSE;
+    if (!ctx || !ctx->initialized) return SPEEDSQL_MISUSE;
 
     /* Generate Poly1305 key */
     uint8_t poly_key[32] = {0};
@@ -333,12 +333,12 @@ static int chacha20_poly1305_encrypt(
 
     poly1305_finish(&poly, tag);
 
-    speeddb_secure_zero(poly_key, 32);
-    return SPEEDDB_OK;
+    speedsql_secure_zero(poly_key, 32);
+    return SPEEDSQL_OK;
 }
 
 static int chacha20_poly1305_decrypt(
-    speeddb_cipher_ctx_t* ctx,
+    speedsql_cipher_ctx_t* ctx,
     const uint8_t* ciphertext,
     size_t ciphertext_len,
     const uint8_t* nonce,
@@ -347,7 +347,7 @@ static int chacha20_poly1305_decrypt(
     const uint8_t* tag,
     uint8_t* plaintext
 ) {
-    if (!ctx || !ctx->initialized) return SPEEDDB_MISUSE;
+    if (!ctx || !ctx->initialized) return SPEEDSQL_MISUSE;
 
     /* Generate Poly1305 key */
     uint8_t poly_key[32] = {0};
@@ -389,26 +389,26 @@ static int chacha20_poly1305_decrypt(
         diff |= computed_tag[i] ^ tag[i];
     }
 
-    speeddb_secure_zero(poly_key, 32);
+    speedsql_secure_zero(poly_key, 32);
 
     if (diff != 0) {
-        return SPEEDDB_CORRUPT;  /* Authentication failed */
+        return SPEEDSQL_CORRUPT;  /* Authentication failed */
     }
 
     /* Decrypt */
     chacha20_encrypt(ctx->key, nonce, 1, ciphertext, ciphertext_len, plaintext);
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static int chacha20_poly1305_rekey(speeddb_cipher_ctx_t* ctx,
+static int chacha20_poly1305_rekey(speedsql_cipher_ctx_t* ctx,
                                     const uint8_t* new_key, size_t key_len) {
-    if (!ctx || key_len != 32) return SPEEDDB_MISUSE;
+    if (!ctx || key_len != 32) return SPEEDSQL_MISUSE;
 
-    speeddb_secure_zero(ctx->key, 32);
+    speedsql_secure_zero(ctx->key, 32);
     memcpy(ctx->key, new_key, 32);
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 static int chacha20_poly1305_self_test(void) {
@@ -425,45 +425,45 @@ static int chacha20_poly1305_self_test(void) {
     };
     const uint8_t plaintext[16] = "Test message!!!";
 
-    speeddb_cipher_ctx_t* ctx;
+    speedsql_cipher_ctx_t* ctx;
     int rc = chacha20_poly1305_init(&ctx, key, 32);
-    if (rc != SPEEDDB_OK) return rc;
+    if (rc != SPEEDSQL_OK) return rc;
 
     uint8_t ciphertext[16], tag[16], decrypted[16];
     rc = chacha20_poly1305_encrypt(ctx, plaintext, 16, nonce,
                                     nullptr, 0, ciphertext, tag);
-    if (rc != SPEEDDB_OK) {
+    if (rc != SPEEDSQL_OK) {
         chacha20_poly1305_destroy(ctx);
         return rc;
     }
 
     rc = chacha20_poly1305_decrypt(ctx, ciphertext, 16, nonce,
                                     nullptr, 0, tag, decrypted);
-    if (rc != SPEEDDB_OK) {
+    if (rc != SPEEDSQL_OK) {
         chacha20_poly1305_destroy(ctx);
         return rc;
     }
 
     if (memcmp(plaintext, decrypted, 16) != 0) {
         chacha20_poly1305_destroy(ctx);
-        return SPEEDDB_ERROR;
+        return SPEEDSQL_ERROR;
     }
 
     chacha20_poly1305_destroy(ctx);
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
-static void chacha20_poly1305_zeroize(speeddb_cipher_ctx_t* ctx) {
+static void chacha20_poly1305_zeroize(speedsql_cipher_ctx_t* ctx) {
     if (ctx) {
-        speeddb_secure_zero(ctx->key, 32);
+        speedsql_secure_zero(ctx->key, 32);
         ctx->initialized = false;
     }
 }
 
-const speeddb_cipher_provider_t g_cipher_chacha20_poly1305 = {
+extern "C" const speedsql_cipher_provider_t g_cipher_chacha20_poly1305 = {
     .name = "ChaCha20-Poly1305",
     .version = "1.0.0",
-    .cipher_id = SPEEDDB_CIPHER_CHACHA20_POLY1305,
+    .cipher_id = SPEEDSQL_CIPHER_CHACHA20_POLY1305,
     .key_size = 32,
     .iv_size = 12,
     .tag_size = 16,

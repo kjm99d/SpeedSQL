@@ -1,8 +1,8 @@
 /*
- * SpeedDB - Cross-platform file I/O
+ * SpeedSQL - Cross-platform file I/O
  */
 
-#include "speeddb_internal.h"
+#include "speedsql_internal.h"
 
 #ifdef _WIN32
 
@@ -45,11 +45,11 @@ void rwlock_unlock(rwlock_t* rw) {
 }
 
 int file_open(file_t* f, const char* path, int flags) {
-    if (!f || !path) return SPEEDDB_MISUSE;
+    if (!f || !path) return SPEEDSQL_MISUSE;
 
     memset(f, 0, sizeof(*f));
     f->path = sdb_strdup(path);
-    if (!f->path) return SPEEDDB_NOMEM;
+    if (!f->path) return SPEEDSQL_NOMEM;
 
     rwlock_init(&f->lock);
 
@@ -83,7 +83,7 @@ int file_open(file_t* f, const char* path, int flags) {
     if (f->handle == INVALID_HANDLE_VALUE) {
         sdb_free(f->path);
         f->path = nullptr;
-        return SPEEDDB_CANTOPEN;
+        return SPEEDSQL_CANTOPEN;
     }
 
     /* Get file size */
@@ -92,11 +92,11 @@ int file_open(file_t* f, const char* path, int flags) {
         f->size = size.QuadPart;
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int file_close(file_t* f) {
-    if (!f) return SPEEDDB_MISUSE;
+    if (!f) return SPEEDSQL_MISUSE;
 
     if (f->handle != INVALID_HANDLE_VALUE) {
         CloseHandle(f->handle);
@@ -109,11 +109,11 @@ int file_close(file_t* f) {
     }
 
     rwlock_destroy(&f->lock);
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int file_read(file_t* f, uint64_t offset, void* buf, size_t len) {
-    if (!f || f->handle == INVALID_HANDLE_VALUE) return SPEEDDB_MISUSE;
+    if (!f || f->handle == INVALID_HANDLE_VALUE) return SPEEDSQL_MISUSE;
 
     rwlock_rdlock(&f->lock);
 
@@ -127,15 +127,15 @@ int file_read(file_t* f, uint64_t offset, void* buf, size_t len) {
     rwlock_unlock(&f->lock);
 
     if (!ok || read != len) {
-        return SPEEDDB_IOERR;
+        return SPEEDSQL_IOERR;
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int file_write(file_t* f, uint64_t offset, const void* buf, size_t len) {
-    if (!f || f->handle == INVALID_HANDLE_VALUE) return SPEEDDB_MISUSE;
-    if (f->readonly) return SPEEDDB_READONLY;
+    if (!f || f->handle == INVALID_HANDLE_VALUE) return SPEEDSQL_MISUSE;
+    if (f->readonly) return SPEEDSQL_READONLY;
 
     rwlock_wrlock(&f->lock);
 
@@ -153,45 +153,45 @@ int file_write(file_t* f, uint64_t offset, const void* buf, size_t len) {
     rwlock_unlock(&f->lock);
 
     if (!ok || written != len) {
-        return SPEEDDB_IOERR;
+        return SPEEDSQL_IOERR;
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int file_sync(file_t* f) {
-    if (!f || f->handle == INVALID_HANDLE_VALUE) return SPEEDDB_MISUSE;
+    if (!f || f->handle == INVALID_HANDLE_VALUE) return SPEEDSQL_MISUSE;
 
     if (!FlushFileBuffers(f->handle)) {
-        return SPEEDDB_IOERR;
+        return SPEEDSQL_IOERR;
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int file_truncate(file_t* f, uint64_t size) {
-    if (!f || f->handle == INVALID_HANDLE_VALUE) return SPEEDDB_MISUSE;
-    if (f->readonly) return SPEEDDB_READONLY;
+    if (!f || f->handle == INVALID_HANDLE_VALUE) return SPEEDSQL_MISUSE;
+    if (f->readonly) return SPEEDSQL_READONLY;
 
     LARGE_INTEGER li;
     li.QuadPart = size;
 
     if (!SetFilePointerEx(f->handle, li, NULL, FILE_BEGIN)) {
-        return SPEEDDB_IOERR;
+        return SPEEDSQL_IOERR;
     }
 
     if (!SetEndOfFile(f->handle)) {
-        return SPEEDDB_IOERR;
+        return SPEEDSQL_IOERR;
     }
 
     f->size = size;
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int file_size(file_t* f, uint64_t* size) {
-    if (!f || !size) return SPEEDDB_MISUSE;
+    if (!f || !size) return SPEEDSQL_MISUSE;
     *size = f->size;
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 uint64_t get_timestamp_us(void) {
@@ -246,11 +246,11 @@ void rwlock_unlock(rwlock_t* rw) {
 }
 
 int file_open(file_t* f, const char* path, int flags) {
-    if (!f || !path) return SPEEDDB_MISUSE;
+    if (!f || !path) return SPEEDSQL_MISUSE;
 
     memset(f, 0, sizeof(*f));
     f->path = sdb_strdup(path);
-    if (!f->path) return SPEEDDB_NOMEM;
+    if (!f->path) return SPEEDSQL_NOMEM;
 
     rwlock_init(&f->lock);
 
@@ -270,7 +270,7 @@ int file_open(file_t* f, const char* path, int flags) {
     if (f->handle == INVALID_FILE_HANDLE) {
         sdb_free(f->path);
         f->path = nullptr;
-        return SPEEDDB_CANTOPEN;
+        return SPEEDSQL_CANTOPEN;
     }
 
     /* Get file size */
@@ -279,11 +279,11 @@ int file_open(file_t* f, const char* path, int flags) {
         f->size = st.st_size;
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int file_close(file_t* f) {
-    if (!f) return SPEEDDB_MISUSE;
+    if (!f) return SPEEDSQL_MISUSE;
 
     if (f->handle != INVALID_FILE_HANDLE) {
         close(f->handle);
@@ -296,11 +296,11 @@ int file_close(file_t* f) {
     }
 
     rwlock_destroy(&f->lock);
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int file_read(file_t* f, uint64_t offset, void* buf, size_t len) {
-    if (!f || f->handle == INVALID_FILE_HANDLE) return SPEEDDB_MISUSE;
+    if (!f || f->handle == INVALID_FILE_HANDLE) return SPEEDSQL_MISUSE;
 
     rwlock_rdlock(&f->lock);
 
@@ -309,15 +309,15 @@ int file_read(file_t* f, uint64_t offset, void* buf, size_t len) {
     rwlock_unlock(&f->lock);
 
     if (n != (ssize_t)len) {
-        return SPEEDDB_IOERR;
+        return SPEEDSQL_IOERR;
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int file_write(file_t* f, uint64_t offset, const void* buf, size_t len) {
-    if (!f || f->handle == INVALID_FILE_HANDLE) return SPEEDDB_MISUSE;
-    if (f->readonly) return SPEEDDB_READONLY;
+    if (!f || f->handle == INVALID_FILE_HANDLE) return SPEEDSQL_MISUSE;
+    if (f->readonly) return SPEEDSQL_READONLY;
 
     rwlock_wrlock(&f->lock);
 
@@ -330,38 +330,38 @@ int file_write(file_t* f, uint64_t offset, const void* buf, size_t len) {
     rwlock_unlock(&f->lock);
 
     if (n != (ssize_t)len) {
-        return SPEEDDB_IOERR;
+        return SPEEDSQL_IOERR;
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int file_sync(file_t* f) {
-    if (!f || f->handle == INVALID_FILE_HANDLE) return SPEEDDB_MISUSE;
+    if (!f || f->handle == INVALID_FILE_HANDLE) return SPEEDSQL_MISUSE;
 
     if (fsync(f->handle) != 0) {
-        return SPEEDDB_IOERR;
+        return SPEEDSQL_IOERR;
     }
 
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int file_truncate(file_t* f, uint64_t size) {
-    if (!f || f->handle == INVALID_FILE_HANDLE) return SPEEDDB_MISUSE;
-    if (f->readonly) return SPEEDDB_READONLY;
+    if (!f || f->handle == INVALID_FILE_HANDLE) return SPEEDSQL_MISUSE;
+    if (f->readonly) return SPEEDSQL_READONLY;
 
     if (ftruncate(f->handle, size) != 0) {
-        return SPEEDDB_IOERR;
+        return SPEEDSQL_IOERR;
     }
 
     f->size = size;
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 int file_size(file_t* f, uint64_t* size) {
-    if (!f || !size) return SPEEDDB_MISUSE;
+    if (!f || !size) return SPEEDSQL_MISUSE;
     *size = f->size;
-    return SPEEDDB_OK;
+    return SPEEDSQL_OK;
 }
 
 uint64_t get_timestamp_us(void) {

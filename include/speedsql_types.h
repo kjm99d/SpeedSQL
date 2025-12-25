@@ -1,29 +1,29 @@
 /*
- * SpeedDB - Internal type definitions
+ * SpeedSQL - Internal type definitions
  */
 
-#ifndef SPEEDDB_TYPES_H
-#define SPEEDDB_TYPES_H
+#ifndef SPEEDSQL_TYPES_H
+#define SPEEDSQL_TYPES_H
 
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
 
 /* Page size - 16KB for better large data performance (vs SQLite's 4KB) */
-#define SPEEDDB_PAGE_SIZE 16384
-#define SPEEDDB_MAX_PAGE_SIZE 65536
-#define SPEEDDB_MIN_PAGE_SIZE 4096
+#define SPEEDSQL_PAGE_SIZE 16384
+#define SPEEDSQL_MAX_PAGE_SIZE 65536
+#define SPEEDSQL_MIN_PAGE_SIZE 4096
 
 /* Cache configuration */
-#define SPEEDDB_DEFAULT_CACHE_SIZE (256 * 1024 * 1024)  /* 256MB default cache */
-#define SPEEDDB_MAX_CACHE_SIZE (8ULL * 1024 * 1024 * 1024)  /* 8GB max */
+#define SPEEDSQL_DEFAULT_CACHE_SIZE (256 * 1024 * 1024)  /* 256MB default cache */
+#define SPEEDSQL_MAX_CACHE_SIZE (8ULL * 1024 * 1024 * 1024)  /* 8GB max */
 
 /* Limits */
-#define SPEEDDB_MAX_SQL_LENGTH (1024 * 1024)  /* 1MB SQL */
-#define SPEEDDB_MAX_COLUMNS 32767
-#define SPEEDDB_MAX_VARIABLE_NUMBER 999
-#define SPEEDDB_MAX_COMPOUND_SELECT 500
-#define SPEEDDB_MAX_EXPR_DEPTH 1000
+#define SPEEDSQL_MAX_SQL_LENGTH (1024 * 1024)  /* 1MB SQL */
+#define SPEEDSQL_MAX_COLUMNS 32767
+#define SPEEDSQL_MAX_VARIABLE_NUMBER 999
+#define SPEEDSQL_MAX_COMPOUND_SELECT 500
+#define SPEEDSQL_MAX_EXPR_DEPTH 1000
 
 /* Page types */
 typedef enum {
@@ -49,7 +49,7 @@ typedef uint64_t txn_id_t;
 
 /* File header structure (first page of database file) */
 typedef struct {
-    char magic[16];              /* "SpeedDB format 1" */
+    char magic[16];              /* "SpeedSQL format1" */
     uint32_t version;            /* File format version */
     uint32_t page_size;          /* Page size in bytes */
     uint64_t page_count;         /* Total pages in file */
@@ -75,7 +75,7 @@ typedef struct {
 
 /* Value storage structure */
 typedef struct {
-    uint8_t type;                /* speeddb_type */
+    uint8_t type;                /* speedsql_type */
     uint32_t size;               /* Size in bytes */
     union {
         int64_t i64;             /* Integer value */
@@ -161,4 +161,4 @@ typedef int (*compare_func_t)(const value_t*, const value_t*);
 /* Hash function type */
 typedef uint64_t (*hash_func_t)(const void* data, size_t len);
 
-#endif /* SPEEDDB_TYPES_H */
+#endif /* SPEEDSQL_TYPES_H */
