@@ -152,11 +152,11 @@ typedef struct {
 
 /* Lock modes */
 typedef enum {
-    LOCK_NONE = 0,
-    LOCK_SHARED = 1,
-    LOCK_RESERVED = 2,
-    LOCK_PENDING = 3,
-    LOCK_EXCLUSIVE = 4
+    SDB_LOCK_NONE = 0,
+    SDB_LOCK_SHARED = 1,
+    SDB_LOCK_RESERVED = 2,
+    SDB_LOCK_PENDING = 3,
+    SDB_LOCK_EXCLUSIVE = 4
 } lock_mode_t;
 
 /* Transaction states */

@@ -547,23 +547,28 @@ static void aes_gcm_zeroize(speedsql_cipher_ctx_t* ctx) {
     }
 }
 
+/* Factory function for C++17 compatibility */
+static speedsql_cipher_provider_t make_cipher_aes_256_gcm() {
+    speedsql_cipher_provider_t p = {};
+    p.name = "AES-256-GCM";
+    p.version = "1.0.0";
+    p.cipher_id = SPEEDSQL_CIPHER_AES_256_GCM;
+    p.key_size = 32;
+    p.iv_size = 12;
+    p.tag_size = 16;
+    p.block_size = 16;
+    p.init = aes_gcm_init;
+    p.destroy = aes_gcm_destroy;
+    p.encrypt = aes_gcm_encrypt;
+    p.decrypt = aes_gcm_decrypt;
+    p.rekey = aes_gcm_rekey;
+    p.self_test = aes_gcm_self_test;
+    p.zeroize = aes_gcm_zeroize;
+    return p;
+}
+
 /* Global provider instances */
-extern "C" const speedsql_cipher_provider_t g_cipher_aes_256_gcm = {
-    .name = "AES-256-GCM",
-    .version = "1.0.0",
-    .cipher_id = SPEEDSQL_CIPHER_AES_256_GCM,
-    .key_size = 32,
-    .iv_size = 12,
-    .tag_size = 16,
-    .block_size = 16,
-    .init = aes_gcm_init,
-    .destroy = aes_gcm_destroy,
-    .encrypt = aes_gcm_encrypt,
-    .decrypt = aes_gcm_decrypt,
-    .rekey = aes_gcm_rekey,
-    .self_test = aes_gcm_self_test,
-    .zeroize = aes_gcm_zeroize
-};
+extern "C" const speedsql_cipher_provider_t g_cipher_aes_256_gcm = make_cipher_aes_256_gcm();
 
 /* ============================================================================
  * AES-256-CBC Implementation
@@ -790,20 +795,25 @@ static int aes_cbc_self_test(void) {
     return SPEEDSQL_OK;
 }
 
+/* Factory function for C++17 compatibility */
+static speedsql_cipher_provider_t make_cipher_aes_256_cbc() {
+    speedsql_cipher_provider_t p = {};
+    p.name = "AES-256-CBC";
+    p.version = "1.0.0";
+    p.cipher_id = SPEEDSQL_CIPHER_AES_256_CBC;
+    p.key_size = 32;
+    p.iv_size = 16;
+    p.tag_size = 32;  /* HMAC-SHA256 */
+    p.block_size = 16;
+    p.init = aes_cbc_init;
+    p.destroy = aes_gcm_destroy;
+    p.encrypt = aes_cbc_encrypt;
+    p.decrypt = aes_cbc_decrypt;
+    p.rekey = aes_gcm_rekey;
+    p.self_test = aes_cbc_self_test;
+    p.zeroize = aes_gcm_zeroize;
+    return p;
+}
+
 /* AES-256-CBC provider */
-extern "C" const speedsql_cipher_provider_t g_cipher_aes_256_cbc = {
-    .name = "AES-256-CBC",
-    .version = "1.0.0",
-    .cipher_id = SPEEDSQL_CIPHER_AES_256_CBC,
-    .key_size = 32,
-    .iv_size = 16,
-    .tag_size = 32,  /* HMAC-SHA256 */
-    .block_size = 16,
-    .init = aes_cbc_init,
-    .destroy = aes_gcm_destroy,
-    .encrypt = aes_cbc_encrypt,
-    .decrypt = aes_cbc_decrypt,
-    .rekey = aes_gcm_rekey,
-    .self_test = aes_cbc_self_test,
-    .zeroize = aes_gcm_zeroize
-};
+extern "C" const speedsql_cipher_provider_t g_cipher_aes_256_cbc = make_cipher_aes_256_cbc();

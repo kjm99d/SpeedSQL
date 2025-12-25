@@ -73,21 +73,13 @@ int buffer_pool_init(buffer_pool_t* pool, size_t cache_size, uint32_t page_size)
 void buffer_pool_destroy(buffer_pool_t* pool) {
     if (!pool) return;
 
-    /* Free all pages in hash table */
-    if (pool->hash_table) {
-        for (size_t i = 0; i < pool->hash_size; i++) {
-            buffer_page_t* page = pool->hash_table[i];
-            while (page) {
-                buffer_page_t* next = page->hash_next;
-                sdb_free(page->data);
-                sdb_free(page);
-                page = next;
-            }
-        }
-        sdb_free(pool->hash_table);
-    }
+    /* Pages are in either:
+     * 1. Free list (not in use)
+     * 2. Hash table + LRU list (in use)
+     * We must free each page exactly once.
+     */
 
-    /* Free pages in free list */
+    /* Free pages in free list (these are NOT in hash table or LRU) */
     buffer_page_t* page = pool->free_list;
     while (page) {
         buffer_page_t* next = page->lru_next;
@@ -96,13 +88,18 @@ void buffer_pool_destroy(buffer_pool_t* pool) {
         page = next;
     }
 
-    /* Free pages in LRU list */
+    /* Free pages in LRU list (these ARE in hash table too) */
     page = pool->lru_head;
     while (page) {
         buffer_page_t* next = page->lru_next;
         sdb_free(page->data);
         sdb_free(page);
         page = next;
+    }
+
+    /* Free the hash table itself (pages already freed above) */
+    if (pool->hash_table) {
+        sdb_free(pool->hash_table);
     }
 
     mutex_destroy(&pool->lock);

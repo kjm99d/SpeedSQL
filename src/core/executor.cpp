@@ -421,14 +421,17 @@ static int create_table(speedsql* db, table_def_t* def) {
         tbl->columns[i].name = sdb_strdup(def->columns[i].name);
         tbl->columns[i].type = def->columns[i].type;
         tbl->columns[i].flags = def->columns[i].flags;
-        tbl->columns[i].default_value = def->columns[i].default_value;
+        tbl->columns[i].default_value = def->columns[i].default_value ?
+            sdb_strdup(def->columns[i].default_value) : nullptr;
+        tbl->columns[i].collation = def->columns[i].collation ?
+            sdb_strdup(def->columns[i].collation) : nullptr;
     }
 
     /* Create B+Tree for table data */
     tbl->data_tree = (struct btree*)sdb_malloc(sizeof(btree_t));
     if (!tbl->data_tree) return SPEEDSQL_NOMEM;
 
-    int rc = btree_create((btree_t*)tbl->data_tree, db->buffer_pool, &db->db_file, nullptr);
+    int rc = btree_create((btree_t*)tbl->data_tree, db->buffer_pool, &db->db_file, value_compare);
     if (rc != SPEEDSQL_OK) {
         sdb_free(tbl->data_tree);
         tbl->data_tree = nullptr;

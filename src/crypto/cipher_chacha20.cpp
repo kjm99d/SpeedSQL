@@ -460,19 +460,24 @@ static void chacha20_poly1305_zeroize(speedsql_cipher_ctx_t* ctx) {
     }
 }
 
-extern "C" const speedsql_cipher_provider_t g_cipher_chacha20_poly1305 = {
-    .name = "ChaCha20-Poly1305",
-    .version = "1.0.0",
-    .cipher_id = SPEEDSQL_CIPHER_CHACHA20_POLY1305,
-    .key_size = 32,
-    .iv_size = 12,
-    .tag_size = 16,
-    .block_size = 1,  /* Stream cipher */
-    .init = chacha20_poly1305_init,
-    .destroy = chacha20_poly1305_destroy,
-    .encrypt = chacha20_poly1305_encrypt,
-    .decrypt = chacha20_poly1305_decrypt,
-    .rekey = chacha20_poly1305_rekey,
-    .self_test = chacha20_poly1305_self_test,
-    .zeroize = chacha20_poly1305_zeroize
-};
+/* Factory function for C++17 compatibility */
+static speedsql_cipher_provider_t make_cipher_chacha20_poly1305() {
+    speedsql_cipher_provider_t p = {};
+    p.name = "ChaCha20-Poly1305";
+    p.version = "1.0.0";
+    p.cipher_id = SPEEDSQL_CIPHER_CHACHA20_POLY1305;
+    p.key_size = 32;
+    p.iv_size = 12;
+    p.tag_size = 16;
+    p.block_size = 1;  /* Stream cipher */
+    p.init = chacha20_poly1305_init;
+    p.destroy = chacha20_poly1305_destroy;
+    p.encrypt = chacha20_poly1305_encrypt;
+    p.decrypt = chacha20_poly1305_decrypt;
+    p.rekey = chacha20_poly1305_rekey;
+    p.self_test = chacha20_poly1305_self_test;
+    p.zeroize = chacha20_poly1305_zeroize;
+    return p;
+}
+
+extern "C" const speedsql_cipher_provider_t g_cipher_chacha20_poly1305 = make_cipher_chacha20_poly1305();

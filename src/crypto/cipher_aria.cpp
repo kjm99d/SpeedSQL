@@ -507,23 +507,28 @@ static void aria_gcm_zeroize(speedsql_cipher_ctx_t* ctx) {
     }
 }
 
+/* Factory function for C++17 compatibility */
+static speedsql_cipher_provider_t make_cipher_aria_256_gcm() {
+    speedsql_cipher_provider_t p = {};
+    p.name = "ARIA-256-GCM";
+    p.version = "1.0.0";
+    p.cipher_id = SPEEDSQL_CIPHER_ARIA_256_GCM;
+    p.key_size = 32;
+    p.iv_size = 12;
+    p.tag_size = 16;
+    p.block_size = 16;
+    p.init = aria_gcm_init;
+    p.destroy = aria_gcm_destroy;
+    p.encrypt = aria_gcm_encrypt;
+    p.decrypt = aria_gcm_decrypt;
+    p.rekey = aria_gcm_rekey;
+    p.self_test = aria_gcm_self_test;
+    p.zeroize = aria_gcm_zeroize;
+    return p;
+}
+
 /* Global provider instances */
-extern "C" const speedsql_cipher_provider_t g_cipher_aria_256_gcm = {
-    .name = "ARIA-256-GCM",
-    .version = "1.0.0",
-    .cipher_id = SPEEDSQL_CIPHER_ARIA_256_GCM,
-    .key_size = 32,
-    .iv_size = 12,
-    .tag_size = 16,
-    .block_size = 16,
-    .init = aria_gcm_init,
-    .destroy = aria_gcm_destroy,
-    .encrypt = aria_gcm_encrypt,
-    .decrypt = aria_gcm_decrypt,
-    .rekey = aria_gcm_rekey,
-    .self_test = aria_gcm_self_test,
-    .zeroize = aria_gcm_zeroize
-};
+extern "C" const speedsql_cipher_provider_t g_cipher_aria_256_gcm = make_cipher_aria_256_gcm();
 
 /* ============================================================================
  * ARIA-256-CBC Implementation
@@ -747,20 +752,25 @@ static int aria_cbc_self_test(void) {
     return SPEEDSQL_OK;
 }
 
+/* Factory function for C++17 compatibility */
+static speedsql_cipher_provider_t make_cipher_aria_256_cbc() {
+    speedsql_cipher_provider_t p = {};
+    p.name = "ARIA-256-CBC";
+    p.version = "1.0.0";
+    p.cipher_id = SPEEDSQL_CIPHER_ARIA_256_CBC;
+    p.key_size = 32;
+    p.iv_size = 16;
+    p.tag_size = 32;
+    p.block_size = 16;
+    p.init = aria_cbc_init;
+    p.destroy = aria_gcm_destroy;
+    p.encrypt = aria_cbc_encrypt;
+    p.decrypt = aria_cbc_decrypt;
+    p.rekey = aria_gcm_rekey;
+    p.self_test = aria_cbc_self_test;
+    p.zeroize = aria_gcm_zeroize;
+    return p;
+}
+
 /* ARIA-256-CBC provider */
-extern "C" const speedsql_cipher_provider_t g_cipher_aria_256_cbc = {
-    .name = "ARIA-256-CBC",
-    .version = "1.0.0",
-    .cipher_id = SPEEDSQL_CIPHER_ARIA_256_CBC,
-    .key_size = 32,
-    .iv_size = 16,
-    .tag_size = 32,
-    .block_size = 16,
-    .init = aria_cbc_init,
-    .destroy = aria_gcm_destroy,
-    .encrypt = aria_cbc_encrypt,
-    .decrypt = aria_cbc_decrypt,
-    .rekey = aria_gcm_rekey,
-    .self_test = aria_cbc_self_test,
-    .zeroize = aria_gcm_zeroize
-};
+extern "C" const speedsql_cipher_provider_t g_cipher_aria_256_cbc = make_cipher_aria_256_cbc();

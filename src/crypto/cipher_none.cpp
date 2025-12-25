@@ -93,20 +93,25 @@ static void cipher_none_zeroize(speedsql_cipher_ctx_t* ctx) {
     }
 }
 
+/* Factory function for C++17 compatibility */
+static speedsql_cipher_provider_t make_cipher_none() {
+    speedsql_cipher_provider_t p = {};
+    p.name = "NONE";
+    p.version = "1.0.0";
+    p.cipher_id = SPEEDSQL_CIPHER_NONE;
+    p.key_size = 0;
+    p.iv_size = 0;
+    p.tag_size = 0;
+    p.block_size = 1;
+    p.init = cipher_none_init;
+    p.destroy = cipher_none_destroy;
+    p.encrypt = cipher_none_encrypt;
+    p.decrypt = cipher_none_decrypt;
+    p.rekey = cipher_none_rekey;
+    p.self_test = cipher_none_self_test;
+    p.zeroize = cipher_none_zeroize;
+    return p;
+}
+
 /* Global provider instance */
-extern "C" const speedsql_cipher_provider_t g_cipher_none = {
-    .name = "NONE",
-    .version = "1.0.0",
-    .cipher_id = SPEEDSQL_CIPHER_NONE,
-    .key_size = 0,
-    .iv_size = 0,
-    .tag_size = 0,
-    .block_size = 1,
-    .init = cipher_none_init,
-    .destroy = cipher_none_destroy,
-    .encrypt = cipher_none_encrypt,
-    .decrypt = cipher_none_decrypt,
-    .rekey = cipher_none_rekey,
-    .self_test = cipher_none_self_test,
-    .zeroize = cipher_none_zeroize
-};
+extern "C" const speedsql_cipher_provider_t g_cipher_none = make_cipher_none();

@@ -294,19 +294,24 @@ static void seed_cbc_zeroize(speedsql_cipher_ctx_t* ctx) {
     }
 }
 
-extern "C" const speedsql_cipher_provider_t g_cipher_seed_cbc = {
-    .name = "SEED-CBC",
-    .version = "1.0.0",
-    .cipher_id = SPEEDSQL_CIPHER_SEED_CBC,
-    .key_size = 16,
-    .iv_size = 16,
-    .tag_size = 0,
-    .block_size = 16,
-    .init = seed_cbc_init,
-    .destroy = seed_cbc_destroy,
-    .encrypt = seed_cbc_encrypt,
-    .decrypt = seed_cbc_decrypt,
-    .rekey = seed_cbc_rekey,
-    .self_test = seed_cbc_self_test,
-    .zeroize = seed_cbc_zeroize
-};
+/* Factory function for C++17 compatibility */
+static speedsql_cipher_provider_t make_cipher_seed_cbc() {
+    speedsql_cipher_provider_t p = {};
+    p.name = "SEED-CBC";
+    p.version = "1.0.0";
+    p.cipher_id = SPEEDSQL_CIPHER_SEED_CBC;
+    p.key_size = 16;
+    p.iv_size = 16;
+    p.tag_size = 0;
+    p.block_size = 16;
+    p.init = seed_cbc_init;
+    p.destroy = seed_cbc_destroy;
+    p.encrypt = seed_cbc_encrypt;
+    p.decrypt = seed_cbc_decrypt;
+    p.rekey = seed_cbc_rekey;
+    p.self_test = seed_cbc_self_test;
+    p.zeroize = seed_cbc_zeroize;
+    return p;
+}
+
+extern "C" const speedsql_cipher_provider_t g_cipher_seed_cbc = make_cipher_seed_cbc();

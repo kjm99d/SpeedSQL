@@ -129,6 +129,10 @@ SPEEDSQL_API int speedsql_open_v2(const char* filename, speedsql** db_out,
 
     *db_out = nullptr;
 
+    /* Check for in-memory database */
+    bool is_memory = (strcmp(filename, ":memory:") == 0 ||
+                      strcmp(filename, "") == 0);
+
     /* Allocate connection structure */
     speedsql* db = (speedsql*)sdb_calloc(1, sizeof(speedsql));
     if (!db) {
@@ -139,61 +143,83 @@ SPEEDSQL_API int speedsql_open_v2(const char* filename, speedsql** db_out,
     mutex_init(&db->lock);
     rwlock_init(&db->schema_lock);
 
-    db->flags = flags;
+    db->flags = flags | (is_memory ? SPEEDSQL_OPEN_MEMORY : 0);
     db->cache_size = SPEEDSQL_DEFAULT_CACHE_SIZE;
     db->errcode = SPEEDSQL_OK;
     db->errmsg[0] = '\0';
 
-    /* Open database file */
-    int file_flags = 0;
-    if (flags & SPEEDSQL_OPEN_READONLY) {
-        file_flags = 0;  /* Read only */
-    } else if (flags & SPEEDSQL_OPEN_READWRITE) {
-        file_flags = 1;  /* Read-write */
-    }
-    if (flags & SPEEDSQL_OPEN_CREATE) {
-        file_flags |= 2;  /* Create if not exists */
-    }
+    int rc = SPEEDSQL_OK;
 
-    int rc = file_open(&db->db_file, filename, file_flags);
-    if (rc != SPEEDSQL_OK) {
-        sdb_set_error(db, SPEEDSQL_CANTOPEN, "Cannot open database file: %s", filename);
-        mutex_destroy(&db->lock);
-        rwlock_destroy(&db->schema_lock);
-        sdb_free(db);
-        return SPEEDSQL_CANTOPEN;
-    }
+    if (is_memory) {
+        /* In-memory database - no file operations */
+        memset(&db->db_file, 0, sizeof(db->db_file));
+        db->db_file.handle = INVALID_FILE_HANDLE;
+        db->db_file.path = sdb_strdup(":memory:");
+        rwlock_init(&db->db_file.lock);
 
-    /* Check if this is a new database */
-    uint64_t db_file_size;
-    file_size(&db->db_file, &db_file_size);
-
-    if (db_file_size == 0) {
-        /* New database - initialize */
-        rc = init_new_database(db);
-        if (rc != SPEEDSQL_OK) {
-            file_close(&db->db_file);
-            mutex_destroy(&db->lock);
-            rwlock_destroy(&db->schema_lock);
-            sdb_free(db);
-            return rc;
-        }
+        /* Initialize header directly */
+        memset(&db->header, 0, sizeof(db->header));
+        memcpy(db->header.magic, DB_MAGIC, sizeof(DB_MAGIC));
+        db->header.version = DB_VERSION;
+        db->header.page_size = SPEEDSQL_PAGE_SIZE;
+        db->header.page_count = 1;
+        db->header.freelist_head = INVALID_PAGE_ID;
+        db->header.freelist_count = 0;
+        db->header.schema_root = INVALID_PAGE_ID;
+        db->header.txn_id = 1;
+        db->header.checksum = crc32(&db->header, offsetof(db_header_t, checksum));
     } else {
-        /* Existing database - read header */
-        rc = read_database_header(db);
+        /* Open database file */
+        int file_flags = 0;
+        if (flags & SPEEDSQL_OPEN_READONLY) {
+            file_flags = 0;  /* Read only */
+        } else if (flags & SPEEDSQL_OPEN_READWRITE) {
+            file_flags = 1;  /* Read-write */
+        }
+        if (flags & SPEEDSQL_OPEN_CREATE) {
+            file_flags |= 2;  /* Create if not exists */
+        }
+
+        rc = file_open(&db->db_file, filename, file_flags);
         if (rc != SPEEDSQL_OK) {
-            file_close(&db->db_file);
+            sdb_set_error(db, SPEEDSQL_CANTOPEN, "Cannot open database file: %s", filename);
             mutex_destroy(&db->lock);
             rwlock_destroy(&db->schema_lock);
             sdb_free(db);
-            return rc;
+            return SPEEDSQL_CANTOPEN;
+        }
+
+        /* Check if this is a new database */
+        uint64_t db_file_size;
+        file_size(&db->db_file, &db_file_size);
+
+        if (db_file_size == 0) {
+            /* New database - initialize */
+            rc = init_new_database(db);
+            if (rc != SPEEDSQL_OK) {
+                file_close(&db->db_file);
+                mutex_destroy(&db->lock);
+                rwlock_destroy(&db->schema_lock);
+                sdb_free(db);
+                return rc;
+            }
+        } else {
+            /* Existing database - read header */
+            rc = read_database_header(db);
+            if (rc != SPEEDSQL_OK) {
+                file_close(&db->db_file);
+                mutex_destroy(&db->lock);
+                rwlock_destroy(&db->schema_lock);
+                sdb_free(db);
+                return rc;
+            }
         }
     }
 
     /* Initialize buffer pool */
     db->buffer_pool = (buffer_pool_t*)sdb_malloc(sizeof(buffer_pool_t));
     if (!db->buffer_pool) {
-        file_close(&db->db_file);
+        if (!is_memory) file_close(&db->db_file);
         mutex_destroy(&db->lock);
         rwlock_destroy(&db->schema_lock);
         sdb_free(db);
@@ -202,7 +228,7 @@ SPEEDSQL_API int speedsql_open_v2(const char* filename, speedsql** db_out,
 
     rc = buffer_pool_init(db->buffer_pool, db->cache_size, db->header.page_size);
     if (rc != SPEEDSQL_OK) {
-        file_close(&db->db_file);
+        if (!is_memory) file_close(&db->db_file);
         mutex_destroy(&db->lock);
         rwlock_destroy(&db->schema_lock);
         sdb_free(db->buffer_pool);
@@ -210,8 +236,8 @@ SPEEDSQL_API int speedsql_open_v2(const char* filename, speedsql** db_out,
         return rc;
     }
 
-    /* Initialize WAL if enabled */
-    if (flags & SPEEDSQL_OPEN_WAL) {
+    /* Initialize WAL if enabled (not for memory databases) */
+    if ((flags & SPEEDSQL_OPEN_WAL) && !is_memory) {
         db->wal = (wal_t*)sdb_malloc(sizeof(wal_t));
         if (db->wal) {
             char wal_path[1024];
@@ -255,6 +281,11 @@ SPEEDSQL_API int speedsql_close(speedsql* db) {
                 sdb_free(db->tables[i].columns[j].collation);
             }
             sdb_free(db->tables[i].columns);
+            /* Free B+Tree for table data */
+            if (db->tables[i].data_tree) {
+                btree_close((btree_t*)db->tables[i].data_tree);
+                sdb_free(db->tables[i].data_tree);
+            }
         }
         sdb_free(db->tables);
     }

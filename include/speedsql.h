@@ -23,7 +23,9 @@ extern "C" {
 
 /* Export macros */
 #ifdef _WIN32
-    #ifdef SPEEDSQL_EXPORTS
+    #ifdef SPEEDSQL_STATIC
+        #define SPEEDSQL_API
+    #elif defined(SPEEDSQL_EXPORTS)
         #define SPEEDSQL_API __declspec(dllexport)
     #else
         #define SPEEDSQL_API __declspec(dllimport)
