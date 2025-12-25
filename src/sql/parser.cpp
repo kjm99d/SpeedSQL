@@ -75,7 +75,7 @@ static expr_t* parse_primary(parser_t* parser) {
         expr_t* expr = create_expr(EXPR_LITERAL);
         if (expr) {
             expr->data.literal.type = SPEEDSQL_TYPE_INT;
-            expr->data.literal.data.i64 = parser->previous.value.int_val;
+            expr->data.literal.data.i = parser->previous.value.int_val;
         }
         return expr;
     }
@@ -84,7 +84,7 @@ static expr_t* parse_primary(parser_t* parser) {
         expr_t* expr = create_expr(EXPR_LITERAL);
         if (expr) {
             expr->data.literal.type = SPEEDSQL_TYPE_FLOAT;
-            expr->data.literal.data.f64 = parser->previous.value.float_val;
+            expr->data.literal.data.f = parser->previous.value.float_val;
         }
         return expr;
     }
@@ -95,12 +95,12 @@ static expr_t* parse_primary(parser_t* parser) {
             expr->data.literal.type = SPEEDSQL_TYPE_TEXT;
             /* Remove quotes */
             int len = parser->previous.length - 2;
-            expr->data.literal.data.str.data = (char*)sdb_malloc(len + 1);
-            if (expr->data.literal.data.str.data) {
-                memcpy(expr->data.literal.data.str.data,
+            expr->data.literal.data.text.data = (char*)sdb_malloc(len + 1);
+            if (expr->data.literal.data.text.data) {
+                memcpy(expr->data.literal.data.text.data,
                        parser->previous.start + 1, len);
-                expr->data.literal.data.str.data[len] = '\0';
-                expr->data.literal.data.str.len = len;
+                expr->data.literal.data.text.data[len] = '\0';
+                expr->data.literal.data.text.len = len;
             }
         }
         return expr;
@@ -723,9 +723,10 @@ static void expr_free(expr_t* expr) {
 
     switch (expr->type) {
         case EXPR_LITERAL:
-            if (expr->data.literal.type == SPEEDSQL_TYPE_TEXT ||
-                expr->data.literal.type == SPEEDSQL_TYPE_BLOB) {
-                sdb_free(expr->data.literal.data.str.data);
+            if (expr->data.literal.type == SPEEDSQL_TYPE_TEXT) {
+                sdb_free(expr->data.literal.data.text.data);
+            } else if (expr->data.literal.type == SPEEDSQL_TYPE_BLOB) {
+                sdb_free(expr->data.literal.data.blob.data);
             }
             break;
         case EXPR_COLUMN:

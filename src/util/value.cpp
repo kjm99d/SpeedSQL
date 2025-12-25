@@ -17,7 +17,7 @@ void value_init_int(value_t* v, int64_t i) {
     memset(v, 0, sizeof(*v));
     v->type = SPEEDSQL_TYPE_INT;
     v->size = sizeof(int64_t);
-    v->data.i64 = i;
+    v->data.i = i;
 }
 
 void value_init_float(value_t* v, double f) {
@@ -25,7 +25,7 @@ void value_init_float(value_t* v, double f) {
     memset(v, 0, sizeof(*v));
     v->type = SPEEDSQL_TYPE_FLOAT;
     v->size = sizeof(double);
-    v->data.f64 = f;
+    v->data.f = f;
 }
 
 void value_init_text(value_t* v, const char* s, int len) {
@@ -35,11 +35,11 @@ void value_init_text(value_t* v, const char* s, int len) {
 
     if (s) {
         if (len < 0) len = (int)strlen(s);
-        v->data.str.data = (char*)sdb_malloc(len + 1);
-        if (v->data.str.data) {
-            memcpy(v->data.str.data, s, len);
-            v->data.str.data[len] = '\0';
-            v->data.str.len = len;
+        v->data.text.data = (char*)sdb_malloc(len + 1);
+        if (v->data.text.data) {
+            memcpy(v->data.text.data, s, len);
+            v->data.text.data[len] = '\0';
+            v->data.text.len = len;
             v->size = len;
         }
     }
@@ -51,10 +51,10 @@ void value_init_blob(value_t* v, const void* data, int len) {
     v->type = SPEEDSQL_TYPE_BLOB;
 
     if (data && len > 0) {
-        v->data.str.data = (char*)sdb_malloc(len);
-        if (v->data.str.data) {
-            memcpy(v->data.str.data, data, len);
-            v->data.str.len = len;
+        v->data.blob.data = (uint8_t*)sdb_malloc(len);
+        if (v->data.blob.data) {
+            memcpy(v->data.blob.data, data, len);
+            v->data.blob.len = len;
             v->size = len;
         }
     }
@@ -72,22 +72,31 @@ void value_copy(value_t* dst, const value_t* src) {
             break;
 
         case SPEEDSQL_TYPE_INT:
-            dst->data.i64 = src->data.i64;
+            dst->data.i = src->data.i;
             break;
 
         case SPEEDSQL_TYPE_FLOAT:
-            dst->data.f64 = src->data.f64;
+            dst->data.f = src->data.f;
             break;
 
         case SPEEDSQL_TYPE_TEXT:
-        case SPEEDSQL_TYPE_BLOB:
         case SPEEDSQL_TYPE_JSON:
-            if (src->data.str.data && src->data.str.len > 0) {
-                dst->data.str.data = (char*)sdb_malloc(src->data.str.len + 1);
-                if (dst->data.str.data) {
-                    memcpy(dst->data.str.data, src->data.str.data, src->data.str.len);
-                    dst->data.str.data[src->data.str.len] = '\0';
-                    dst->data.str.len = src->data.str.len;
+            if (src->data.text.data && src->data.text.len > 0) {
+                dst->data.text.data = (char*)sdb_malloc(src->data.text.len + 1);
+                if (dst->data.text.data) {
+                    memcpy(dst->data.text.data, src->data.text.data, src->data.text.len);
+                    dst->data.text.data[src->data.text.len] = '\0';
+                    dst->data.text.len = src->data.text.len;
+                }
+            }
+            break;
+
+        case SPEEDSQL_TYPE_BLOB:
+            if (src->data.blob.data && src->data.blob.len > 0) {
+                dst->data.blob.data = (uint8_t*)sdb_malloc(src->data.blob.len);
+                if (dst->data.blob.data) {
+                    memcpy(dst->data.blob.data, src->data.blob.data, src->data.blob.len);
+                    dst->data.blob.len = src->data.blob.len;
                 }
             }
             break;
@@ -110,9 +119,12 @@ void value_free(value_t* v) {
 
     switch (v->type) {
         case SPEEDSQL_TYPE_TEXT:
-        case SPEEDSQL_TYPE_BLOB:
         case SPEEDSQL_TYPE_JSON:
-            sdb_free(v->data.str.data);
+            sdb_free(v->data.text.data);
+            break;
+
+        case SPEEDSQL_TYPE_BLOB:
+            sdb_free(v->data.blob.data);
             break;
 
         case SPEEDSQL_TYPE_VECTOR:
@@ -141,33 +153,33 @@ int value_compare(const value_t* a, const value_t* b) {
     if (a->type == b->type) {
         switch (a->type) {
             case SPEEDSQL_TYPE_INT:
-                if (a->data.i64 < b->data.i64) return -1;
-                if (a->data.i64 > b->data.i64) return 1;
+                if (a->data.i < b->data.i) return -1;
+                if (a->data.i > b->data.i) return 1;
                 return 0;
 
             case SPEEDSQL_TYPE_FLOAT:
-                if (a->data.f64 < b->data.f64) return -1;
-                if (a->data.f64 > b->data.f64) return 1;
+                if (a->data.f < b->data.f) return -1;
+                if (a->data.f > b->data.f) return 1;
                 return 0;
 
             case SPEEDSQL_TYPE_TEXT:
             case SPEEDSQL_TYPE_JSON: {
-                int len = a->data.str.len < b->data.str.len ?
-                          a->data.str.len : b->data.str.len;
-                int cmp = memcmp(a->data.str.data, b->data.str.data, len);
+                uint32_t len = a->data.text.len < b->data.text.len ?
+                          a->data.text.len : b->data.text.len;
+                int cmp = memcmp(a->data.text.data, b->data.text.data, len);
                 if (cmp != 0) return cmp;
-                if (a->data.str.len < b->data.str.len) return -1;
-                if (a->data.str.len > b->data.str.len) return 1;
+                if (a->data.text.len < b->data.text.len) return -1;
+                if (a->data.text.len > b->data.text.len) return 1;
                 return 0;
             }
 
             case SPEEDSQL_TYPE_BLOB: {
-                int len = a->data.str.len < b->data.str.len ?
-                          a->data.str.len : b->data.str.len;
-                int cmp = memcmp(a->data.str.data, b->data.str.data, len);
+                uint32_t len = a->data.blob.len < b->data.blob.len ?
+                          a->data.blob.len : b->data.blob.len;
+                int cmp = memcmp(a->data.blob.data, b->data.blob.data, len);
                 if (cmp != 0) return cmp;
-                if (a->data.str.len < b->data.str.len) return -1;
-                if (a->data.str.len > b->data.str.len) return 1;
+                if (a->data.blob.len < b->data.blob.len) return -1;
+                if (a->data.blob.len > b->data.blob.len) return 1;
                 return 0;
             }
 
@@ -180,8 +192,8 @@ int value_compare(const value_t* a, const value_t* b) {
     if ((a->type == SPEEDSQL_TYPE_INT || a->type == SPEEDSQL_TYPE_FLOAT) &&
         (b->type == SPEEDSQL_TYPE_INT || b->type == SPEEDSQL_TYPE_FLOAT)) {
 
-        double da = (a->type == SPEEDSQL_TYPE_INT) ? (double)a->data.i64 : a->data.f64;
-        double db = (b->type == SPEEDSQL_TYPE_INT) ? (double)b->data.i64 : b->data.f64;
+        double da = (a->type == SPEEDSQL_TYPE_INT) ? (double)a->data.i : a->data.f;
+        double db = (b->type == SPEEDSQL_TYPE_INT) ? (double)b->data.i : b->data.f;
 
         if (da < db) return -1;
         if (da > db) return 1;
@@ -200,16 +212,21 @@ uint64_t value_hash(const value_t* v) {
             return 0;
 
         case SPEEDSQL_TYPE_INT:
-            return xxhash64(&v->data.i64, sizeof(v->data.i64));
+            return xxhash64(&v->data.i, sizeof(v->data.i));
 
         case SPEEDSQL_TYPE_FLOAT:
-            return xxhash64(&v->data.f64, sizeof(v->data.f64));
+            return xxhash64(&v->data.f, sizeof(v->data.f));
 
         case SPEEDSQL_TYPE_TEXT:
-        case SPEEDSQL_TYPE_BLOB:
         case SPEEDSQL_TYPE_JSON:
-            if (v->data.str.data) {
-                return xxhash64(v->data.str.data, v->data.str.len);
+            if (v->data.text.data) {
+                return xxhash64(v->data.text.data, v->data.text.len);
+            }
+            return 0;
+
+        case SPEEDSQL_TYPE_BLOB:
+            if (v->data.blob.data) {
+                return xxhash64(v->data.blob.data, v->data.blob.len);
             }
             return 0;
 

@@ -73,17 +73,32 @@ typedef struct {
     uint32_t checksum;           /* Page checksum */
 } page_header_t;
 
+/* Value type enum (for internal use) */
+typedef enum {
+    VAL_NULL = 0,
+    VAL_INT = 1,
+    VAL_FLOAT = 2,
+    VAL_TEXT = 3,
+    VAL_BLOB = 4,
+    VAL_JSON = 5,
+    VAL_VECTOR = 6
+} value_type_t;
+
 /* Value storage structure */
 typedef struct {
-    uint8_t type;                /* speedsql_type */
+    uint8_t type;                /* value_type_t / speedsql_type */
     uint32_t size;               /* Size in bytes */
     union {
-        int64_t i64;             /* Integer value */
-        double f64;              /* Float value */
+        int64_t i;               /* Integer value (VAL_INT) */
+        double f;                /* Float value (VAL_FLOAT) */
         struct {
             char* data;
             uint32_t len;
-        } str;                   /* Text/Blob/JSON */
+        } text;                  /* Text/JSON */
+        struct {
+            uint8_t* data;
+            uint32_t len;
+        } blob;                  /* Blob */
         struct {
             float* data;
             uint32_t dimensions;
@@ -107,12 +122,16 @@ typedef struct {
 #define COL_FLAG_AUTOINCREMENT 0x08
 #define COL_FLAG_INDEXED     0x10
 
+/* Forward declare btree_t for table_def */
+struct btree;
+
 /* Table definition */
 typedef struct {
     char* name;                  /* Table name */
     uint32_t column_count;       /* Number of columns */
     column_def_t* columns;       /* Column definitions */
     page_id_t root_page;         /* Root page of B+tree */
+    struct btree* data_tree;     /* In-memory B+tree handle */
     uint64_t row_count;          /* Estimated row count */
     uint8_t flags;               /* Table flags */
 } table_def_t;

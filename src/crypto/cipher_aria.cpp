@@ -525,6 +525,229 @@ extern "C" const speedsql_cipher_provider_t g_cipher_aria_256_gcm = {
     .zeroize = aria_gcm_zeroize
 };
 
+/* ============================================================================
+ * ARIA-256-CBC Implementation
+ * ============================================================================ */
+
+/* Decrypt a single block */
+static void aria_decrypt_block(speedsql_cipher_ctx_t* ctx, const uint8_t* in, uint8_t* out) {
+    uint8_t state[16];
+    memcpy(state, in, 16);
+
+    for (int i = 0; i < ctx->rounds - 1; i++) {
+        xor_128(state, state, ctx->dec_round_keys[i]);
+        if (i % 2 == 0) {
+            aria_sl1(state);
+        } else {
+            aria_sl2(state);
+        }
+        aria_dl(state);
+    }
+
+    xor_128(state, state, ctx->dec_round_keys[ctx->rounds - 1]);
+    if ((ctx->rounds - 1) % 2 == 0) {
+        aria_sl1(state);
+    } else {
+        aria_sl2(state);
+    }
+    xor_128(out, state, ctx->dec_round_keys[ctx->rounds]);
+}
+
+/* PKCS#7 padding */
+static size_t aria_pkcs7_pad(uint8_t* data, size_t data_len, size_t block_size) {
+    size_t pad_len = block_size - (data_len % block_size);
+    for (size_t i = 0; i < pad_len; i++) {
+        data[data_len + i] = (uint8_t)pad_len;
+    }
+    return data_len + pad_len;
+}
+
+/* Simple HMAC for CBC authentication */
+static void aria_hmac_simple(const uint8_t* key, size_t key_len,
+                              const uint8_t* data, size_t data_len,
+                              uint8_t* mac) {
+    uint32_t hash = 0x811c9dc5;
+
+    for (size_t i = 0; i < key_len; i++) {
+        hash ^= key[i];
+        hash *= 0x01000193;
+    }
+
+    for (size_t i = 0; i < data_len; i++) {
+        hash ^= data[i];
+        hash *= 0x01000193;
+    }
+
+    for (int i = 0; i < 8; i++) {
+        uint32_t h = hash ^ (uint32_t)(i * 0x9e3779b9);
+        mac[i * 4 + 0] = (h >> 24) & 0xff;
+        mac[i * 4 + 1] = (h >> 16) & 0xff;
+        mac[i * 4 + 2] = (h >> 8) & 0xff;
+        mac[i * 4 + 3] = h & 0xff;
+        hash = h * 0x01000193;
+    }
+}
+
+static int aria_cbc_init(speedsql_cipher_ctx_t** ctx,
+                          const uint8_t* key, size_t key_len) {
+    if (key_len != 32) return SPEEDSQL_MISUSE;
+
+    *ctx = (speedsql_cipher_ctx_t*)speedsql_secure_malloc(sizeof(speedsql_cipher_ctx_t));
+    if (!*ctx) return SPEEDSQL_NOMEM;
+
+    memset(*ctx, 0, sizeof(speedsql_cipher_ctx_t));
+    memcpy((*ctx)->key, key, 32);
+    aria_key_expansion(*ctx, key);
+    (*ctx)->initialized = true;
+    (*ctx)->mode = SPEEDSQL_CIPHER_ARIA_256_CBC;
+
+    return SPEEDSQL_OK;
+}
+
+static int aria_cbc_encrypt(
+    speedsql_cipher_ctx_t* ctx,
+    const uint8_t* plaintext,
+    size_t plaintext_len,
+    const uint8_t* iv,
+    const uint8_t* aad,
+    size_t aad_len,
+    uint8_t* ciphertext,
+    uint8_t* tag
+) {
+    if (!ctx || !ctx->initialized) return SPEEDSQL_MISUSE;
+    (void)aad;
+    (void)aad_len;
+
+    /* Copy plaintext and apply padding */
+    uint8_t* padded = (uint8_t*)sdb_malloc(plaintext_len + 16);
+    if (!padded) return SPEEDSQL_NOMEM;
+
+    memcpy(padded, plaintext, plaintext_len);
+    size_t padded_len = aria_pkcs7_pad(padded, plaintext_len, 16);
+
+    /* CBC encryption */
+    uint8_t prev_block[16];
+    memcpy(prev_block, iv, 16);
+
+    for (size_t i = 0; i < padded_len; i += 16) {
+        uint8_t block[16];
+        for (int j = 0; j < 16; j++) {
+            block[j] = padded[i + j] ^ prev_block[j];
+        }
+
+        aria_encrypt_block(ctx, block, &ciphertext[i]);
+        memcpy(prev_block, &ciphertext[i], 16);
+    }
+
+    sdb_free(padded);
+
+    /* Generate HMAC tag */
+    uint8_t* hmac_data = (uint8_t*)sdb_malloc(16 + padded_len);
+    if (!hmac_data) return SPEEDSQL_NOMEM;
+
+    memcpy(hmac_data, iv, 16);
+    memcpy(hmac_data + 16, ciphertext, padded_len);
+    aria_hmac_simple(ctx->key, 32, hmac_data, 16 + padded_len, tag);
+    sdb_free(hmac_data);
+
+    return SPEEDSQL_OK;
+}
+
+static int aria_cbc_decrypt(
+    speedsql_cipher_ctx_t* ctx,
+    const uint8_t* ciphertext,
+    size_t ciphertext_len,
+    const uint8_t* iv,
+    const uint8_t* aad,
+    size_t aad_len,
+    const uint8_t* tag,
+    uint8_t* plaintext
+) {
+    if (!ctx || !ctx->initialized) return SPEEDSQL_MISUSE;
+    if (ciphertext_len == 0 || ciphertext_len % 16 != 0) return SPEEDSQL_CORRUPT;
+    (void)aad;
+    (void)aad_len;
+
+    /* Verify HMAC first */
+    uint8_t computed_tag[32];
+    uint8_t* hmac_data = (uint8_t*)sdb_malloc(16 + ciphertext_len);
+    if (!hmac_data) return SPEEDSQL_NOMEM;
+
+    memcpy(hmac_data, iv, 16);
+    memcpy(hmac_data + 16, ciphertext, ciphertext_len);
+    aria_hmac_simple(ctx->key, 32, hmac_data, 16 + ciphertext_len, computed_tag);
+    sdb_free(hmac_data);
+
+    /* Constant-time comparison */
+    uint8_t diff = 0;
+    for (int i = 0; i < 32; i++) {
+        diff |= computed_tag[i] ^ tag[i];
+    }
+    if (diff != 0) {
+        return SPEEDSQL_CORRUPT;
+    }
+
+    /* CBC decryption */
+    uint8_t prev_block[16];
+    memcpy(prev_block, iv, 16);
+
+    for (size_t i = 0; i < ciphertext_len; i += 16) {
+        uint8_t decrypted[16];
+        aria_decrypt_block(ctx, &ciphertext[i], decrypted);
+
+        for (int j = 0; j < 16; j++) {
+            plaintext[i + j] = decrypted[j] ^ prev_block[j];
+        }
+
+        memcpy(prev_block, &ciphertext[i], 16);
+    }
+
+    return SPEEDSQL_OK;
+}
+
+static int aria_cbc_self_test(void) {
+    const uint8_t key[32] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+    };
+    const uint8_t iv[16] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+    };
+    const uint8_t plaintext[16] = {
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff
+    };
+
+    speedsql_cipher_ctx_t* ctx;
+    int rc = aria_cbc_init(&ctx, key, 32);
+    if (rc != SPEEDSQL_OK) return rc;
+
+    uint8_t ciphertext[32], tag[32], decrypted[32];
+    rc = aria_cbc_encrypt(ctx, plaintext, 16, iv, nullptr, 0, ciphertext, tag);
+    if (rc != SPEEDSQL_OK) {
+        aria_gcm_destroy(ctx);
+        return rc;
+    }
+
+    rc = aria_cbc_decrypt(ctx, ciphertext, 32, iv, nullptr, 0, tag, decrypted);
+    if (rc != SPEEDSQL_OK) {
+        aria_gcm_destroy(ctx);
+        return rc;
+    }
+
+    if (memcmp(plaintext, decrypted, 16) != 0) {
+        aria_gcm_destroy(ctx);
+        return SPEEDSQL_ERROR;
+    }
+
+    aria_gcm_destroy(ctx);
+    return SPEEDSQL_OK;
+}
+
+/* ARIA-256-CBC provider */
 extern "C" const speedsql_cipher_provider_t g_cipher_aria_256_cbc = {
     .name = "ARIA-256-CBC",
     .version = "1.0.0",
@@ -533,11 +756,11 @@ extern "C" const speedsql_cipher_provider_t g_cipher_aria_256_cbc = {
     .iv_size = 16,
     .tag_size = 32,
     .block_size = 16,
-    .init = aria_gcm_init,
+    .init = aria_cbc_init,
     .destroy = aria_gcm_destroy,
-    .encrypt = nullptr,  /* TODO */
-    .decrypt = nullptr,
+    .encrypt = aria_cbc_encrypt,
+    .decrypt = aria_cbc_decrypt,
     .rekey = aria_gcm_rekey,
-    .self_test = aria_gcm_self_test,
+    .self_test = aria_cbc_self_test,
     .zeroize = aria_gcm_zeroize
 };

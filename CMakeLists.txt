@@ -42,6 +42,7 @@ endif()
 # Source files
 set(SPEEDSQL_SOURCES
     src/core/database.cpp
+    src/core/executor.cpp
     src/storage/file_io.cpp
     src/storage/buffer_pool.cpp
     src/storage/wal.cpp
@@ -120,6 +121,7 @@ if(SPEEDSQL_BUILD_EXAMPLES)
     # Basic usage example
     add_executable(speedsql_example examples/basic_usage.cpp)
     target_link_libraries(speedsql_example PRIVATE speedsql_static)
+    target_compile_definitions(speedsql_example PRIVATE SPEEDSQL_EXPORTS)
     set_target_properties(speedsql_example PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
@@ -127,6 +129,7 @@ if(SPEEDSQL_BUILD_EXAMPLES)
     # Encryption example
     add_executable(speedsql_crypto_example examples/encryption_example.cpp)
     target_link_libraries(speedsql_crypto_example PRIVATE speedsql_static)
+    target_compile_definitions(speedsql_crypto_example PRIVATE SPEEDSQL_EXPORTS)
     set_target_properties(speedsql_crypto_example PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
@@ -134,6 +137,7 @@ if(SPEEDSQL_BUILD_EXAMPLES)
     # Custom cipher example
     add_executable(speedsql_custom_cipher examples/custom_cipher_example.cpp)
     target_link_libraries(speedsql_custom_cipher PRIVATE speedsql_static)
+    target_compile_definitions(speedsql_custom_cipher PRIVATE SPEEDSQL_EXPORTS)
     set_target_properties(speedsql_custom_cipher PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
@@ -141,6 +145,7 @@ if(SPEEDSQL_BUILD_EXAMPLES)
     # C++ wrapper example
     add_executable(speedsql_cpp_example examples/cpp_wrapper_example.cpp)
     target_link_libraries(speedsql_cpp_example PRIVATE speedsql_static)
+    target_compile_definitions(speedsql_cpp_example PRIVATE SPEEDSQL_EXPORTS)
     set_target_properties(speedsql_cpp_example PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
@@ -152,6 +157,7 @@ if(SPEEDSQL_BUILD_TESTS)
 
     add_executable(speedsql_test tests/test_main.cpp)
     target_link_libraries(speedsql_test PRIVATE speedsql_static)
+    target_compile_definitions(speedsql_test PRIVATE SPEEDSQL_EXPORTS)
     set_target_properties(speedsql_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
