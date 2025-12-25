@@ -7,6 +7,10 @@
 #include "speedsql_internal.h"
 #include <stdarg.h>
 
+#ifdef _WIN32
+#define strcasecmp _stricmp
+#endif
+
 /* ============================================================================
  * Parameter Counting (for prepared statements)
  * ============================================================================ */
@@ -457,6 +461,382 @@ static int execute_create_table(speedsql_stmt* stmt) {
 }
 
 /* ============================================================================
+ * Executor: DROP TABLE
+ * ============================================================================ */
+
+static int execute_drop_table(speedsql_stmt* stmt) {
+    parsed_stmt_t* p = stmt->parsed;
+    if (!p || p->table_count == 0) return SPEEDSQL_MISUSE;
+
+    const char* table_name = p->tables[0].name;
+    speedsql* db = stmt->db;
+
+    /* Find table index */
+    size_t table_idx = SIZE_MAX;
+    for (size_t i = 0; i < db->table_count; i++) {
+        if (strcmp(db->tables[i].name, table_name) == 0) {
+            table_idx = i;
+            break;
+        }
+    }
+
+    if (table_idx == SIZE_MAX) {
+        sdb_set_error(db, SPEEDSQL_ERROR, "Table '%s' not found", table_name);
+        return SPEEDSQL_ERROR;
+    }
+
+    /* Free table resources */
+    table_def_t* tbl = &db->tables[table_idx];
+    sdb_free(tbl->name);
+    for (uint32_t j = 0; j < tbl->column_count; j++) {
+        sdb_free(tbl->columns[j].name);
+        sdb_free(tbl->columns[j].default_value);
+        sdb_free(tbl->columns[j].collation);
+    }
+    sdb_free(tbl->columns);
+    if (tbl->data_tree) {
+        btree_close((btree_t*)tbl->data_tree);
+        sdb_free(tbl->data_tree);
+    }
+
+    /* Remove from array by shifting */
+    for (size_t i = table_idx; i < db->table_count - 1; i++) {
+        db->tables[i] = db->tables[i + 1];
+    }
+    db->table_count--;
+
+    return SPEEDSQL_OK;
+}
+
+/* ============================================================================
+ * Executor: CREATE INDEX
+ * ============================================================================ */
+
+static int execute_create_index(speedsql_stmt* stmt) {
+    parsed_stmt_t* p = stmt->parsed;
+    if (!p || !p->new_index) return SPEEDSQL_MISUSE;
+
+    speedsql* db = stmt->db;
+    index_def_t* def = p->new_index;
+
+    /* Find table */
+    table_def_t* table = find_table(db, def->table_name);
+    if (!table) {
+        sdb_set_error(db, SPEEDSQL_ERROR, "Table '%s' not found", def->table_name);
+        return SPEEDSQL_ERROR;
+    }
+
+    /* Expand indices array */
+    index_def_t* new_indices = (index_def_t*)sdb_realloc(
+        db->indices, (db->index_count + 1) * sizeof(index_def_t));
+    if (!new_indices) return SPEEDSQL_NOMEM;
+
+    db->indices = new_indices;
+
+    /* Copy index definition */
+    index_def_t* idx = &db->indices[db->index_count];
+    memset(idx, 0, sizeof(*idx));
+
+    idx->name = sdb_strdup(def->name);
+    idx->table_name = sdb_strdup(def->table_name);
+    idx->column_count = def->column_count;
+    idx->flags = def->flags;
+
+    idx->column_indices = (uint32_t*)sdb_malloc(def->column_count * sizeof(uint32_t));
+    if (idx->column_indices) {
+        memcpy(idx->column_indices, def->column_indices,
+               def->column_count * sizeof(uint32_t));
+    }
+
+    /* TODO: Create B+Tree for index and populate from table data */
+    idx->root_page = INVALID_PAGE_ID;
+
+    db->index_count++;
+    return SPEEDSQL_OK;
+}
+
+/* ============================================================================
+ * Executor: DROP INDEX
+ * ============================================================================ */
+
+static int execute_drop_index(speedsql_stmt* stmt) {
+    parsed_stmt_t* p = stmt->parsed;
+    if (!p || !p->new_index) return SPEEDSQL_MISUSE;
+
+    speedsql* db = stmt->db;
+    const char* index_name = p->new_index->name;
+
+    /* Find index */
+    size_t idx = SIZE_MAX;
+    for (size_t i = 0; i < db->index_count; i++) {
+        if (strcmp(db->indices[i].name, index_name) == 0) {
+            idx = i;
+            break;
+        }
+    }
+
+    if (idx == SIZE_MAX) {
+        sdb_set_error(db, SPEEDSQL_ERROR, "Index '%s' not found", index_name);
+        return SPEEDSQL_ERROR;
+    }
+
+    /* Free index resources */
+    sdb_free(db->indices[idx].name);
+    sdb_free(db->indices[idx].table_name);
+    sdb_free(db->indices[idx].column_indices);
+
+    /* Remove from array */
+    for (size_t i = idx; i < db->index_count - 1; i++) {
+        db->indices[i] = db->indices[i + 1];
+    }
+    db->index_count--;
+
+    return SPEEDSQL_OK;
+}
+
+/* ============================================================================
+ * Executor: UPDATE
+ * ============================================================================ */
+
+static int execute_update(speedsql_stmt* stmt) {
+    parsed_stmt_t* p = stmt->parsed;
+    if (!p || p->table_count == 0) return SPEEDSQL_MISUSE;
+
+    table_def_t* table = find_table(stmt->db, p->tables[0].name);
+    if (!table) {
+        sdb_set_error(stmt->db, SPEEDSQL_ERROR, "Table '%s' not found", p->tables[0].name);
+        return SPEEDSQL_ERROR;
+    }
+
+    if (!table->data_tree) {
+        sdb_set_error(stmt->db, SPEEDSQL_ERROR, "Table has no data tree");
+        return SPEEDSQL_ERROR;
+    }
+
+    btree_t* tree = (btree_t*)table->data_tree;
+    btree_cursor_t cursor;
+    btree_cursor_init(&cursor, tree);
+    btree_cursor_first(&cursor);
+
+    int updated_count = 0;
+
+    /* Collect keys to update (can't modify while iterating) */
+    value_t* keys_to_update = nullptr;
+    value_t** new_rows = nullptr;
+    int update_capacity = 64;
+    int update_count = 0;
+
+    keys_to_update = (value_t*)sdb_malloc(update_capacity * sizeof(value_t));
+    new_rows = (value_t**)sdb_malloc(update_capacity * sizeof(value_t*));
+
+    while (cursor.valid && !cursor.at_end) {
+        value_t key, value;
+        value_init_null(&key);
+        value_init_null(&value);
+
+        btree_cursor_key(&cursor, &key);
+        btree_cursor_value(&cursor, &value);
+
+        if (value.type == VAL_BLOB && value.data.blob.data) {
+            int col_count = *(int*)value.data.blob.data;
+            value_t* row_vals = (value_t*)((uint8_t*)value.data.blob.data + sizeof(int));
+
+            /* Check WHERE condition */
+            bool pass_filter = true;
+            if (p->where) {
+                stmt->current_row = row_vals;
+                stmt->column_count = col_count;
+
+                value_t filter_result;
+                value_init_null(&filter_result);
+                eval_expr(stmt, p->where, &filter_result);
+
+                pass_filter = (filter_result.type != VAL_NULL && filter_result.data.i != 0);
+                value_free(&filter_result);
+            }
+
+            if (pass_filter) {
+                /* Expand arrays if needed */
+                if (update_count >= update_capacity) {
+                    update_capacity *= 2;
+                    keys_to_update = (value_t*)sdb_realloc(keys_to_update,
+                        update_capacity * sizeof(value_t));
+                    new_rows = (value_t**)sdb_realloc(new_rows,
+                        update_capacity * sizeof(value_t*));
+                }
+
+                /* Store key for later update */
+                value_copy(&keys_to_update[update_count], &key);
+
+                /* Create new row with updated values */
+                value_t* new_row = (value_t*)sdb_calloc(col_count, sizeof(value_t));
+                for (int i = 0; i < col_count; i++) {
+                    value_copy(&new_row[i], &row_vals[i]);
+                }
+
+                /* Apply SET expressions */
+                for (int u = 0; u < p->update_count; u++) {
+                    /* Find column index by name */
+                    int col_idx = -1;
+                    for (uint32_t c = 0; c < table->column_count; c++) {
+                        if (strcmp(table->columns[c].name, p->update_columns[u]) == 0) {
+                            col_idx = c;
+                            break;
+                        }
+                    }
+
+                    if (col_idx >= 0 && col_idx < col_count) {
+                        stmt->current_row = new_row;
+                        stmt->column_count = col_count;
+
+                        value_t new_val;
+                        value_init_null(&new_val);
+                        eval_expr(stmt, p->update_exprs[u], &new_val);
+
+                        value_free(&new_row[col_idx]);
+                        value_copy(&new_row[col_idx], &new_val);
+                        value_free(&new_val);
+                    }
+                }
+
+                new_rows[update_count] = new_row;
+                update_count++;
+            }
+        }
+
+        value_free(&key);
+        value_free(&value);
+        btree_cursor_next(&cursor);
+    }
+
+    btree_cursor_close(&cursor);
+
+    /* Now apply updates */
+    for (int i = 0; i < update_count; i++) {
+        /* Delete old entry */
+        btree_delete(tree, &keys_to_update[i]);
+
+        /* Insert new entry with same key */
+        size_t row_size = sizeof(int) + table->column_count * sizeof(value_t);
+        uint8_t* row_data = (uint8_t*)sdb_malloc(row_size);
+        *(int*)row_data = table->column_count;
+        memcpy(row_data + sizeof(int), new_rows[i], table->column_count * sizeof(value_t));
+
+        value_t new_value;
+        value_init_blob(&new_value, row_data, row_size);
+        btree_insert(tree, &keys_to_update[i], &new_value);
+
+        sdb_free(row_data);
+        value_free(&new_value);
+        value_free(&keys_to_update[i]);
+        sdb_free(new_rows[i]);
+
+        updated_count++;
+    }
+
+    sdb_free(keys_to_update);
+    sdb_free(new_rows);
+
+    stmt->db->total_changes += updated_count;
+    stmt->current_row = nullptr;
+    stmt->column_count = 0;
+
+    return SPEEDSQL_DONE;
+}
+
+/* ============================================================================
+ * Executor: DELETE
+ * ============================================================================ */
+
+static int execute_delete(speedsql_stmt* stmt) {
+    parsed_stmt_t* p = stmt->parsed;
+    if (!p || p->table_count == 0) return SPEEDSQL_MISUSE;
+
+    table_def_t* table = find_table(stmt->db, p->tables[0].name);
+    if (!table) {
+        sdb_set_error(stmt->db, SPEEDSQL_ERROR, "Table '%s' not found", p->tables[0].name);
+        return SPEEDSQL_ERROR;
+    }
+
+    if (!table->data_tree) {
+        sdb_set_error(stmt->db, SPEEDSQL_ERROR, "Table has no data tree");
+        return SPEEDSQL_ERROR;
+    }
+
+    btree_t* tree = (btree_t*)table->data_tree;
+    btree_cursor_t cursor;
+    btree_cursor_init(&cursor, tree);
+    btree_cursor_first(&cursor);
+
+    /* Collect keys to delete (can't modify while iterating) */
+    value_t* keys_to_delete = nullptr;
+    int delete_capacity = 64;
+    int delete_count = 0;
+
+    keys_to_delete = (value_t*)sdb_malloc(delete_capacity * sizeof(value_t));
+
+    while (cursor.valid && !cursor.at_end) {
+        value_t key, value;
+        value_init_null(&key);
+        value_init_null(&value);
+
+        btree_cursor_key(&cursor, &key);
+        btree_cursor_value(&cursor, &value);
+
+        if (value.type == VAL_BLOB && value.data.blob.data) {
+            int col_count = *(int*)value.data.blob.data;
+            value_t* row_vals = (value_t*)((uint8_t*)value.data.blob.data + sizeof(int));
+
+            /* Check WHERE condition */
+            bool pass_filter = true;
+            if (p->where) {
+                stmt->current_row = row_vals;
+                stmt->column_count = col_count;
+
+                value_t filter_result;
+                value_init_null(&filter_result);
+                eval_expr(stmt, p->where, &filter_result);
+
+                pass_filter = (filter_result.type != VAL_NULL && filter_result.data.i != 0);
+                value_free(&filter_result);
+            }
+
+            if (pass_filter) {
+                /* Expand array if needed */
+                if (delete_count >= delete_capacity) {
+                    delete_capacity *= 2;
+                    keys_to_delete = (value_t*)sdb_realloc(keys_to_delete,
+                        delete_capacity * sizeof(value_t));
+                }
+
+                value_copy(&keys_to_delete[delete_count], &key);
+                delete_count++;
+            }
+        }
+
+        value_free(&key);
+        value_free(&value);
+        btree_cursor_next(&cursor);
+    }
+
+    btree_cursor_close(&cursor);
+
+    /* Now delete the collected keys */
+    for (int i = 0; i < delete_count; i++) {
+        btree_delete(tree, &keys_to_delete[i]);
+        value_free(&keys_to_delete[i]);
+    }
+
+    sdb_free(keys_to_delete);
+
+    stmt->db->total_changes += delete_count;
+    stmt->current_row = nullptr;
+    stmt->column_count = 0;
+
+    return SPEEDSQL_DONE;
+}
+
+/* ============================================================================
  * Executor: INSERT
  * ============================================================================ */
 
@@ -523,6 +903,125 @@ static int execute_insert(speedsql_stmt* stmt) {
 }
 
 /* ============================================================================
+ * Aggregate Function Handling
+ * ============================================================================ */
+
+typedef struct {
+    int64_t count;
+    double sum;
+    double min;
+    double max;
+    bool has_min;
+    bool has_max;
+} agg_state_t;
+
+static bool is_aggregate_function(const char* name) {
+    return (strcasecmp(name, "COUNT") == 0 ||
+            strcasecmp(name, "SUM") == 0 ||
+            strcasecmp(name, "AVG") == 0 ||
+            strcasecmp(name, "MIN") == 0 ||
+            strcasecmp(name, "MAX") == 0);
+}
+
+static bool has_aggregate(expr_t* expr) {
+    if (!expr) return false;
+
+    switch (expr->type) {
+        case EXPR_FUNCTION:
+            if (is_aggregate_function(expr->data.function.name)) {
+                return true;
+            }
+            for (int i = 0; i < expr->data.function.arg_count; i++) {
+                if (has_aggregate(expr->data.function.args[i])) {
+                    return true;
+                }
+            }
+            break;
+        case EXPR_BINARY_OP:
+            return has_aggregate(expr->data.binary.left) ||
+                   has_aggregate(expr->data.binary.right);
+        case EXPR_UNARY_OP:
+            return has_aggregate(expr->data.unary.operand);
+        default:
+            break;
+    }
+    return false;
+}
+
+/* ============================================================================
+ * Result Buffer for ORDER BY / GROUP BY
+ * ============================================================================ */
+
+typedef struct {
+    value_t** rows;
+    int* sort_keys;   /* For ORDER BY sort key values */
+    int row_count;
+    int capacity;
+    int col_count;
+} result_buffer_t;
+
+static void result_buffer_init(result_buffer_t* buf, int col_count) {
+    buf->rows = nullptr;
+    buf->sort_keys = nullptr;
+    buf->row_count = 0;
+    buf->capacity = 0;
+    buf->col_count = col_count;
+}
+
+static void result_buffer_add(result_buffer_t* buf, value_t* row) {
+    if (buf->row_count >= buf->capacity) {
+        int new_cap = buf->capacity == 0 ? 64 : buf->capacity * 2;
+        buf->rows = (value_t**)sdb_realloc(buf->rows, new_cap * sizeof(value_t*));
+        buf->capacity = new_cap;
+    }
+
+    value_t* row_copy = (value_t*)sdb_malloc(buf->col_count * sizeof(value_t));
+    for (int i = 0; i < buf->col_count; i++) {
+        value_init_null(&row_copy[i]);
+        value_copy(&row_copy[i], &row[i]);
+    }
+    buf->rows[buf->row_count++] = row_copy;
+}
+
+static void result_buffer_free(result_buffer_t* buf) {
+    for (int i = 0; i < buf->row_count; i++) {
+        for (int j = 0; j < buf->col_count; j++) {
+            value_free(&buf->rows[i][j]);
+        }
+        sdb_free(buf->rows[i]);
+    }
+    sdb_free(buf->rows);
+    sdb_free(buf->sort_keys);
+}
+
+/* Sort comparison data */
+static parsed_stmt_t* g_sort_stmt = nullptr;
+
+static int compare_rows(const void* a, const void* b) {
+    value_t* row_a = *(value_t**)a;
+    value_t* row_b = *(value_t**)b;
+
+    if (!g_sort_stmt || !g_sort_stmt->order_by) return 0;
+
+    for (int i = 0; i < g_sort_stmt->order_by_count; i++) {
+        order_by_t* ob = &g_sort_stmt->order_by[i];
+
+        /* Get column index from expression */
+        int col_idx = 0;
+        if (ob->expr && ob->expr->type == EXPR_COLUMN) {
+            col_idx = ob->expr->data.column_ref.index;
+            if (col_idx < 0) col_idx = 0;
+        }
+
+        int cmp = value_compare(&row_a[col_idx], &row_b[col_idx]);
+        if (cmp != 0) {
+            return ob->desc ? -cmp : cmp;
+        }
+    }
+    return 0;
+}
+
+/* ============================================================================
  * Executor: SELECT
  * ============================================================================ */
 
@@ -544,6 +1043,8 @@ static int execute_select_init(speedsql_stmt* stmt) {
             stmt->column_names[i] = sdb_strdup(p->columns[i].alias);
         } else if (p->columns[i].expr && p->columns[i].expr->type == EXPR_COLUMN) {
             stmt->column_names[i] = sdb_strdup(p->columns[i].expr->data.column_ref.column);
+        } else if (p->columns[i].expr && p->columns[i].expr->type == EXPR_FUNCTION) {
+            stmt->column_names[i] = sdb_strdup(p->columns[i].expr->data.function.name);
         } else {
             char buf[32];
             snprintf(buf, sizeof(buf), "column%d", i);
@@ -576,6 +1077,133 @@ static int execute_select_init(speedsql_stmt* stmt) {
     return SPEEDSQL_OK;
 }
 
+/* Evaluate aggregate expression given aggregate states */
+static void eval_aggregate_expr(expr_t* expr, agg_state_t* agg, value_t* result) {
+    if (!expr || expr->type != EXPR_FUNCTION) {
+        value_init_null(result);
+        return;
+    }
+
+    const char* name = expr->data.function.name;
+
+    if (strcasecmp(name, "COUNT") == 0) {
+        value_init_int(result, agg->count);
+    } else if (strcasecmp(name, "SUM") == 0) {
+        value_init_float(result, agg->sum);
+    } else if (strcasecmp(name, "AVG") == 0) {
+        if (agg->count > 0) {
+            value_init_float(result, agg->sum / (double)agg->count);
+        } else {
+            value_init_null(result);
+        }
+    } else if (strcasecmp(name, "MIN") == 0) {
+        if (agg->has_min) {
+            value_init_float(result, agg->min);
+        } else {
+            value_init_null(result);
+        }
+    } else if (strcasecmp(name, "MAX") == 0) {
+        if (agg->has_max) {
+            value_init_float(result, agg->max);
+        } else {
+            value_init_null(result);
+        }
+    } else {
+        value_init_null(result);
+    }
+}
+
+/* Process aggregate from row value */
+static void process_aggregate(agg_state_t* agg, value_t* val) {
+    agg->count++;
+
+    double v = 0.0;
+    if (val->type == VAL_INT) {
+        v = (double)val->data.i;
+    } else if (val->type == VAL_FLOAT) {
+        v = val->data.f;
+    } else if (val->type == VAL_NULL) {
+        return;
+    }
+
+    agg->sum += v;
+
+    if (!agg->has_min || v < agg->min) {
+        agg->min = v;
+        agg->has_min = true;
+    }
+    if (!agg->has_max || v > agg->max) {
+        agg->max = v;
+        agg->has_max = true;
+    }
+}
+
+/* ============================================================================
+ * JOIN Execution Helper
+ * ============================================================================ */
+
+typedef struct {
+    value_t** left_rows;
+    int* left_col_counts;
+    int left_row_count;
+    int left_capacity;
+    value_t** right_rows;
+    int* right_col_counts;
+    int right_row_count;
+    int right_capacity;
+    int left_idx;
+    int right_idx;
+    bool* right_matched;  /* For LEFT JOIN tracking */
+} join_state_t;
+
+static void collect_table_rows(btree_t* tree, value_t*** rows_out, int** col_counts_out,
+                                int* row_count_out, int* capacity_out) {
+    btree_cursor_t cursor;
+    btree_cursor_init(&cursor, tree);
+    btree_cursor_first(&cursor);
+
+    int capacity = 64;
+    *rows_out = (value_t**)sdb_malloc(capacity * sizeof(value_t*));
+    *col_counts_out = (int*)sdb_malloc(capacity * sizeof(int));
+    *row_count_out = 0;
+
+    while (cursor.valid && !cursor.at_end) {
+        value_t key, value;
+        value_init_null(&key);
+        value_init_null(&value);
+
+        btree_cursor_key(&cursor, &key);
+        btree_cursor_value(&cursor, &value);
+
+        if (value.type == VAL_BLOB && value.data.blob.data) {
+            int col_count = *(int*)value.data.blob.data;
+            value_t* row_vals = (value_t*)((uint8_t*)value.data.blob.data + sizeof(int));
+
+            if (*row_count_out >= capacity) {
+                capacity *= 2;
+                *rows_out = (value_t**)sdb_realloc(*rows_out, capacity * sizeof(value_t*));
+                *col_counts_out = (int*)sdb_realloc(*col_counts_out, capacity * sizeof(int));
+            }
+
+            value_t* row_copy = (value_t*)sdb_malloc(col_count * sizeof(value_t));
+            for (int i = 0; i < col_count; i++) {
+                value_init_null(&row_copy[i]);
+                value_copy(&row_copy[i], &row_vals[i]);
+            }
+            (*rows_out)[*row_count_out] = row_copy;
+            (*col_counts_out)[*row_count_out] = col_count;
+            (*row_count_out)++;
+        }
+
+        value_free(&key);
+        value_free(&value);
+        btree_cursor_next(&cursor);
+    }
+
+    btree_cursor_close(&cursor);
+    *capacity_out = capacity;
+}
+
 static int execute_select_step(speedsql_stmt* stmt) {
     parsed_stmt_t* p = stmt->parsed;
 
@@ -593,8 +1221,531 @@ static int execute_select_step(speedsql_stmt* stmt) {
         return SPEEDSQL_DONE;
     }
 
-    /* Table scan */
+    /* Check if we have JOINs */
+    bool has_joins = (p->join_count > 0);
+
+    /* Check if we have ORDER BY, GROUP BY, or aggregates */
+    bool needs_buffering = (p->order_by_count > 0 || has_joins);
+    bool has_aggregates = false;
+
+    for (int i = 0; i < p->column_count; i++) {
+        if (has_aggregate(p->columns[i].expr)) {
+            has_aggregates = true;
+            break;
+        }
+    }
+
+    /* Handle aggregates (with or without GROUP BY) */
+    if (has_aggregates && !stmt->has_row) {
+        agg_state_t* agg_states = (agg_state_t*)sdb_calloc(p->column_count, sizeof(agg_state_t));
+
+        btree_cursor_t* cursor = &stmt->plan->data.scan.cursor;
+        table_def_t* table = stmt->plan->data.scan.table;
+
+        while (cursor->valid && !cursor->at_end) {
+            value_t key, value;
+            value_init_null(&key);
+            value_init_null(&value);
+
+            btree_cursor_key(cursor, &key);
+            btree_cursor_value(cursor, &value);
+
+            if (value.type == VAL_BLOB && value.data.blob.data) {
+                int col_count = *(int*)value.data.blob.data;
+                value_t* row_vals = (value_t*)((uint8_t*)value.data.blob.data + sizeof(int));
+
+                /* Apply WHERE filter */
+                bool pass_filter = true;
+                if (p->where) {
+                    stmt->current_row = row_vals;
+                    stmt->column_count = col_count;
+
+                    value_t filter_result;
+                    value_init_null(&filter_result);
+                    eval_expr(stmt, p->where, &filter_result);
+
+                    pass_filter = (filter_result.type != VAL_NULL && filter_result.data.i != 0);
+                    value_free(&filter_result);
+                }
+
+                if (pass_filter) {
+                    /* Process aggregates */
+                    for (int i = 0; i < p->column_count; i++) {
+                        expr_t* expr = p->columns[i].expr;
+                        if (expr && expr->type == EXPR_FUNCTION &&
+                            is_aggregate_function(expr->data.function.name)) {
+
+                            if (expr->data.function.arg_count > 0 &&
+                                expr->data.function.args[0]) {
+
+                                /* Evaluate the argument */
+                                stmt->current_row = row_vals;
+                                stmt->column_count = col_count;
+
+                                value_t arg_val;
+                                value_init_null(&arg_val);
+                                eval_expr(stmt, expr->data.function.args[0], &arg_val);
+
+                                process_aggregate(&agg_states[i], &arg_val);
+                                value_free(&arg_val);
+                            } else {
+                                /* COUNT(*) */
+                                agg_states[i].count++;
+                            }
+                        }
+                    }
+                }
+            }
+
+            value_free(&key);
+            value_free(&value);
+            btree_cursor_next(cursor);
+        }
+
+        /* Build result row from aggregates */
+        stmt->column_count = p->column_count;
+        for (int i = 0; i < p->column_count; i++) {
+            value_free(&stmt->current_row[i]);
+
+            expr_t* expr = p->columns[i].expr;
+            if (expr && expr->type == EXPR_FUNCTION &&
+                is_aggregate_function(expr->data.function.name)) {
+                eval_aggregate_expr(expr, &agg_states[i], &stmt->current_row[i]);
+            } else {
+                value_init_null(&stmt->current_row[i]);
+            }
+        }
+
+        sdb_free(agg_states);
+        stmt->has_row = true;
+        stmt->step_count++;
+        return SPEEDSQL_ROW;
+    }
+
+    /* Handle ORDER BY or JOINs - buffer all results, sort, then return */
+    if (needs_buffering && !stmt->has_row) {
+        result_buffer_t buf;
+        result_buffer_init(&buf, p->column_count);
+
+        table_def_t* table = stmt->plan->data.scan.table;
+
+        /* Resolve ORDER BY column indices */
+        for (int i = 0; i < p->order_by_count; i++) {
+            if (p->order_by[i].expr && p->order_by[i].expr->type == EXPR_COLUMN) {
+                const char* col_name = p->order_by[i].expr->data.column_ref.column;
+                for (uint32_t c = 0; c < table->column_count; c++) {
+                    if (strcmp(table->columns[c].name, col_name) == 0) {
+                        p->order_by[i].expr->data.column_ref.index = c;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (has_joins && p->join_count > 0) {
+            /* Handle JOINs - nested loop join implementation */
+            value_t** left_rows = nullptr;
+            int* left_col_counts = nullptr;
+            int left_row_count = 0;
+            int left_capacity = 0;
+
+            /* Collect left table rows */
+            collect_table_rows((btree_t*)table->data_tree, &left_rows, &left_col_counts,
+                               &left_row_count, &left_capacity);
+
+            for (int j = 0; j < p->join_count; j++) {
+                join_clause_t* jc = &p->joins[j];
+
+                /* Find right table */
+                table_def_t* right_table = find_table(stmt->db, jc->table_name);
+                if (!right_table || !right_table->data_tree) continue;
+
+                value_t** right_rows = nullptr;
+                int* right_col_counts = nullptr;
+                int right_row_count = 0;
+                int right_capacity = 0;
+
+                collect_table_rows((btree_t*)right_table->data_tree, &right_rows, &right_col_counts,
+                                   &right_row_count, &right_capacity);
+
+                /* Track matched rows for LEFT/RIGHT JOIN */
+                bool* left_matched = (jc->type == JOIN_LEFT) ?
+                    (bool*)sdb_calloc(left_row_count, sizeof(bool)) : nullptr;
+                bool* right_matched = (jc->type == JOIN_RIGHT) ?
+                    (bool*)sdb_calloc(right_row_count, sizeof(bool)) : nullptr;
+
+                /* Nested loop join */
+                for (int li = 0; li < left_row_count; li++) {
+                    bool found_match = false;
+
+                    for (int ri = 0; ri < right_row_count; ri++) {
+                        /* Build combined row for ON condition evaluation */
+                        int total_cols = left_col_counts[li] + right_col_counts[ri];
+                        value_t* combined = (value_t*)sdb_calloc(total_cols, sizeof(value_t));
+
+                        for (int c = 0; c < left_col_counts[li]; c++) {
+                            value_copy(&combined[c], &left_rows[li][c]);
+                        }
+                        for (int c = 0; c < right_col_counts[ri]; c++) {
+                            value_copy(&combined[left_col_counts[li] + c], &right_rows[ri][c]);
+                        }
+
+                        /* Evaluate ON condition */
+                        bool matches = true;
+                        if (jc->on_condition) {
+                            stmt->current_row = combined;
+                            stmt->column_count = total_cols;
+
+                            value_t result;
+                            value_init_null(&result);
+                            eval_expr(stmt, jc->on_condition, &result);
+
+                            matches = (result.type != VAL_NULL && result.data.i != 0);
+                            value_free(&result);
+                        }
+
+                        if (matches) {
+                            found_match = true;
+                            if (left_matched) left_matched[li] = true;
+                            if (right_matched) right_matched[ri] = true;
+
+                            /* Apply WHERE and project */
+                            bool pass_filter = true;
+                            if (p->where) {
+                                stmt->current_row = combined;
+                                stmt->column_count = total_cols;
+
+                                value_t filter_result;
+                                value_init_null(&filter_result);
+                                eval_expr(stmt, p->where, &filter_result);
+
+                                pass_filter = (filter_result.type != VAL_NULL && filter_result.data.i != 0);
+                                value_free(&filter_result);
+                            }
+
+                            if (pass_filter) {
+                                value_t* projected = (value_t*)sdb_calloc(p->column_count, sizeof(value_t));
+
+                                for (int i = 0; i < p->column_count; i++) {
+                                    if (p->columns[i].expr) {
+                                        stmt->current_row = combined;
+                                        stmt->column_count = total_cols;
+                                        eval_expr(stmt, p->columns[i].expr, &projected[i]);
+                                    }
+                                }
+
+                                result_buffer_add(&buf, projected);
+
+                                for (int i = 0; i < p->column_count; i++) {
+                                    value_free(&projected[i]);
+                                }
+                                sdb_free(projected);
+                            }
+                        }
+
+                        for (int c = 0; c < total_cols; c++) {
+                            value_free(&combined[c]);
+                        }
+                        sdb_free(combined);
+                    }
+
+                    /* LEFT JOIN: add unmatched left rows with NULLs */
+                    if (jc->type == JOIN_LEFT && !found_match) {
+                        int total_cols = left_col_counts[li] + (right_row_count > 0 ? right_col_counts[0] : 0);
+                        value_t* combined = (value_t*)sdb_calloc(total_cols, sizeof(value_t));
+
+                        for (int c = 0; c < left_col_counts[li]; c++) {
+                            value_copy(&combined[c], &left_rows[li][c]);
+                        }
+                        /* Right side is NULL */
+                        for (int c = left_col_counts[li]; c < total_cols; c++) {
+                            value_init_null(&combined[c]);
+                        }
+
+                        bool pass_filter = true;
+                        if (p->where) {
+                            stmt->current_row = combined;
+                            stmt->column_count = total_cols;
+
+                            value_t filter_result;
+                            value_init_null(&filter_result);
+                            eval_expr(stmt, p->where, &filter_result);
+
+                            pass_filter = (filter_result.type != VAL_NULL && filter_result.data.i != 0);
+                            value_free(&filter_result);
+                        }
+
+                        if (pass_filter) {
+                            value_t* projected = (value_t*)sdb_calloc(p->column_count, sizeof(value_t));
+
+                            for (int i = 0; i < p->column_count; i++) {
+                                if (p->columns[i].expr) {
+                                    stmt->current_row = combined;
+                                    stmt->column_count = total_cols;
+                                    eval_expr(stmt, p->columns[i].expr, &projected[i]);
+                                }
+                            }
+
+                            result_buffer_add(&buf, projected);
+
+                            for (int i = 0; i < p->column_count; i++) {
+                                value_free(&projected[i]);
+                            }
+                            sdb_free(projected);
+                        }
+
+                        for (int c = 0; c < total_cols; c++) {
+                            value_free(&combined[c]);
+                        }
+                        sdb_free(combined);
+                    }
+                }
+
+                /* RIGHT JOIN: add unmatched right rows with NULLs */
+                if (jc->type == JOIN_RIGHT && right_matched) {
+                    for (int ri = 0; ri < right_row_count; ri++) {
+                        if (right_matched[ri]) continue;
+
+                        int total_cols = (left_row_count > 0 ? left_col_counts[0] : 0) + right_col_counts[ri];
+                        value_t* combined = (value_t*)sdb_calloc(total_cols, sizeof(value_t));
+
+                        /* Left side is NULL */
+                        for (int c = 0; c < (left_row_count > 0 ? left_col_counts[0] : 0); c++) {
+                            value_init_null(&combined[c]);
+                        }
+                        for (int c = 0; c < right_col_counts[ri]; c++) {
+                            value_copy(&combined[(left_row_count > 0 ? left_col_counts[0] : 0) + c],
+                                       &right_rows[ri][c]);
+                        }
+
+                        value_t* projected = (value_t*)sdb_calloc(p->column_count, sizeof(value_t));
+
+                        for (int i = 0; i < p->column_count; i++) {
+                            if (p->columns[i].expr) {
+                                stmt->current_row = combined;
+                                stmt->column_count = total_cols;
+                                eval_expr(stmt, p->columns[i].expr, &projected[i]);
+                            }
+                        }
+
+                        result_buffer_add(&buf, projected);
+
+                        for (int i = 0; i < p->column_count; i++) {
+                            value_free(&projected[i]);
+                        }
+                        sdb_free(projected);
+
+                        for (int c = 0; c < total_cols; c++) {
+                            value_free(&combined[c]);
+                        }
+                        sdb_free(combined);
+                    }
+                }
+
+                /* Clean up right table rows */
+                for (int ri = 0; ri < right_row_count; ri++) {
+                    for (int c = 0; c < right_col_counts[ri]; c++) {
+                        value_free(&right_rows[ri][c]);
+                    }
+                    sdb_free(right_rows[ri]);
+                }
+                sdb_free(right_rows);
+                sdb_free(right_col_counts);
+                sdb_free(left_matched);
+                sdb_free(right_matched);
+            }
+
+            /* Clean up left table rows */
+            for (int li = 0; li < left_row_count; li++) {
+                for (int c = 0; c < left_col_counts[li]; c++) {
+                    value_free(&left_rows[li][c]);
+                }
+                sdb_free(left_rows[li]);
+            }
+            sdb_free(left_rows);
+            sdb_free(left_col_counts);
+
+        } else {
+            /* No JOINs - simple table scan with buffering */
+            btree_cursor_t* cursor = &stmt->plan->data.scan.cursor;
+
+            while (cursor->valid && !cursor->at_end) {
+                value_t key, value;
+                value_init_null(&key);
+                value_init_null(&value);
+
+                btree_cursor_key(cursor, &key);
+                btree_cursor_value(cursor, &value);
+
+                if (value.type == VAL_BLOB && value.data.blob.data) {
+                    int col_count = *(int*)value.data.blob.data;
+                    value_t* row_vals = (value_t*)((uint8_t*)value.data.blob.data + sizeof(int));
+
+                    /* Apply WHERE filter */
+                    bool pass_filter = true;
+                    if (p->where) {
+                        stmt->current_row = row_vals;
+                        stmt->column_count = col_count;
+
+                        value_t filter_result;
+                        value_init_null(&filter_result);
+                        eval_expr(stmt, p->where, &filter_result);
+
+                        pass_filter = (filter_result.type != VAL_NULL && filter_result.data.i != 0);
+                        value_free(&filter_result);
+                    }
+
+                    if (pass_filter) {
+                        /* Project row */
+                        value_t* projected = (value_t*)sdb_calloc(p->column_count, sizeof(value_t));
+
+                        for (int i = 0; i < p->column_count; i++) {
+                            if (p->columns[i].expr && p->columns[i].expr->type == EXPR_COLUMN) {
+                                int idx = p->columns[i].expr->data.column_ref.index;
+                                if (idx < 0) {
+                                    /* Resolve by name */
+                                    const char* col_name = p->columns[i].expr->data.column_ref.column;
+                                    for (uint32_t c = 0; c < table->column_count; c++) {
+                                        if (strcmp(table->columns[c].name, col_name) == 0) {
+                                            idx = c;
+                                            p->columns[i].expr->data.column_ref.index = c;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (idx >= 0 && idx < col_count) {
+                                    value_copy(&projected[i], &row_vals[idx]);
+                                }
+                            } else if (p->columns[i].expr) {
+                                stmt->current_row = row_vals;
+                                stmt->column_count = col_count;
+                                eval_expr(stmt, p->columns[i].expr, &projected[i]);
+                            }
+                        }
+
+                        result_buffer_add(&buf, projected);
+
+                        for (int i = 0; i < p->column_count; i++) {
+                            value_free(&projected[i]);
+                        }
+                        sdb_free(projected);
+                    }
+                }
+
+                value_free(&key);
+                value_free(&value);
+                btree_cursor_next(cursor);
+            }
+        }
+
+        /* Sort the buffer */
+        if (buf.row_count > 0) {
+            g_sort_stmt = p;
+            qsort(buf.rows, buf.row_count, sizeof(value_t*), compare_rows);
+            g_sort_stmt = nullptr;
+        }
+
+        /* Store buffer in plan for iteration */
+        stmt->plan->data.sort.buffer = buf.rows;
+        stmt->plan->data.sort.buffer_size = buf.row_count;
+        stmt->plan->data.sort.current = 0;
+        stmt->plan->type = PLAN_SORT;  /* Switch plan type */
+
+        /* Don't free buf.rows - transferred to plan */
+        buf.rows = nullptr;
+        buf.capacity = 0;
+
+        stmt->has_row = true;
+    }
+
+    /* Return sorted results */
+    if (stmt->plan->type == PLAN_SORT) {
+        int idx = stmt->plan->data.sort.current;
+
+        /* Apply OFFSET */
+        while (idx < p->offset && idx < stmt->plan->data.sort.buffer_size) {
+            idx++;
+        }
+
+        if (idx >= stmt->plan->data.sort.buffer_size) {
+            /* Free buffer */
+            for (int i = 0; i < stmt->plan->data.sort.buffer_size; i++) {
+                for (int j = 0; j < p->column_count; j++) {
+                    value_free(&stmt->plan->data.sort.buffer[i][j]);
+                }
+                sdb_free(stmt->plan->data.sort.buffer[i]);
+            }
+            sdb_free(stmt->plan->data.sort.buffer);
+            stmt->plan->data.sort.buffer = nullptr;
+            return SPEEDSQL_DONE;
+        }
+
+        /* Check LIMIT */
+        int returned_count = idx - (int)p->offset;
+        if (p->limit > 0 && returned_count >= p->limit) {
+            /* Free buffer */
+            for (int i = 0; i < stmt->plan->data.sort.buffer_size; i++) {
+                for (int j = 0; j < p->column_count; j++) {
+                    value_free(&stmt->plan->data.sort.buffer[i][j]);
+                }
+                sdb_free(stmt->plan->data.sort.buffer[i]);
+            }
+            sdb_free(stmt->plan->data.sort.buffer);
+            stmt->plan->data.sort.buffer = nullptr;
+            return SPEEDSQL_DONE;
+        }
+
+        /* Copy row to current_row */
+        for (int i = 0; i < p->column_count; i++) {
+            value_free(&stmt->current_row[i]);
+            value_copy(&stmt->current_row[i], &stmt->plan->data.sort.buffer[idx][i]);
+        }
+
+        stmt->plan->data.sort.current = idx + 1;
+        stmt->step_count++;
+        return SPEEDSQL_ROW;
+    }
+
+    /* Simple table scan without buffering */
     btree_cursor_t* cursor = &stmt->plan->data.scan.cursor;
+    table_def_t* table = stmt->plan->data.scan.table;
+
+    /* Apply OFFSET on first access */
+    while (p->offset > 0 && stmt->step_count < p->offset &&
+           cursor->valid && !cursor->at_end) {
+
+        value_t key, value;
+        value_init_null(&key);
+        value_init_null(&value);
+
+        btree_cursor_key(cursor, &key);
+        btree_cursor_value(cursor, &value);
+
+        bool pass_filter = true;
+        if (p->where && value.type == VAL_BLOB && value.data.blob.data) {
+            int col_count = *(int*)value.data.blob.data;
+            value_t* row_vals = (value_t*)((uint8_t*)value.data.blob.data + sizeof(int));
+
+            stmt->current_row = row_vals;
+            stmt->column_count = col_count;
+
+            value_t filter_result;
+            value_init_null(&filter_result);
+            eval_expr(stmt, p->where, &filter_result);
+
+            pass_filter = (filter_result.type != VAL_NULL && filter_result.data.i != 0);
+            value_free(&filter_result);
+        }
+
+        value_free(&key);
+        value_free(&value);
+
+        if (pass_filter) {
+            stmt->step_count++;
+        }
+
+        btree_cursor_next(cursor);
+    }
 
     while (cursor->valid && !cursor->at_end) {
         /* Get current row */
@@ -631,26 +1782,47 @@ static int execute_select_step(speedsql_stmt* stmt) {
             }
 
             if (pass_filter) {
+                /* Resolve column indices if not done */
+                for (int i = 0; i < p->column_count; i++) {
+                    if (p->columns[i].expr && p->columns[i].expr->type == EXPR_COLUMN) {
+                        if (p->columns[i].expr->data.column_ref.index < 0) {
+                            const char* col_name = p->columns[i].expr->data.column_ref.column;
+                            for (uint32_t c = 0; c < table->column_count; c++) {
+                                if (strcmp(table->columns[c].name, col_name) == 0) {
+                                    p->columns[i].expr->data.column_ref.index = c;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 /* Project columns */
-                for (int i = 0; i < stmt->column_count && i < col_count; i++) {
+                for (int i = 0; i < stmt->column_count; i++) {
                     value_free(&stmt->current_row[i]);
 
                     if (p->columns[i].expr) {
-                        /* Store row for expr eval */
-                        value_t* temp = (value_t*)sdb_malloc(col_count * sizeof(value_t));
-                        if (temp) {
-                            memcpy(temp, row_vals, col_count * sizeof(value_t));
-                            value_t* saved = stmt->current_row;
-                            stmt->current_row = temp;
+                        if (p->columns[i].expr->type == EXPR_COLUMN) {
+                            int idx = p->columns[i].expr->data.column_ref.index;
+                            if (idx >= 0 && idx < col_count) {
+                                value_copy(&stmt->current_row[i], &row_vals[idx]);
+                            } else {
+                                value_init_null(&stmt->current_row[i]);
+                            }
+                        } else {
+                            stmt->current_row = row_vals;
+                            stmt->column_count = col_count;
+                            value_t temp_row[32];
+                            for (int j = 0; j < col_count && j < 32; j++) {
+                                value_copy(&temp_row[j], &row_vals[j]);
+                            }
+                            stmt->current_row = temp_row;
                             eval_expr(stmt, p->columns[i].expr, &stmt->current_row[i]);
-                            stmt->current_row = saved;
-                            value_copy(&stmt->current_row[i], &temp[i]);
-                            sdb_free(temp);
                         }
-                    } else if (i < col_count) {
-                        value_copy(&stmt->current_row[i], &row_vals[i]);
                     }
                 }
+
+                stmt->column_count = p->column_count;
 
                 value_free(&key);
                 value_free(&value);
@@ -662,7 +1834,7 @@ static int execute_select_step(speedsql_stmt* stmt) {
                 stmt->step_count++;
 
                 /* Check LIMIT */
-                if (p->limit > 0 && stmt->step_count > p->limit) {
+                if (p->limit > 0 && (stmt->step_count - p->offset) > p->limit) {
                     return SPEEDSQL_DONE;
                 }
 
@@ -848,10 +2020,48 @@ SPEEDSQL_API int speedsql_step(speedsql_stmt* stmt) {
             }
             return SPEEDSQL_DONE;
 
+        case SQL_UPDATE:
+            if (!stmt->executed) {
+                stmt->executed = true;
+                return execute_update(stmt);
+            }
+            return SPEEDSQL_DONE;
+
+        case SQL_DELETE:
+            if (!stmt->executed) {
+                stmt->executed = true;
+                return execute_delete(stmt);
+            }
+            return SPEEDSQL_DONE;
+
         case SQL_CREATE_TABLE:
             if (!stmt->executed) {
                 stmt->executed = true;
                 rc = execute_create_table(stmt);
+                return (rc == SPEEDSQL_OK) ? SPEEDSQL_DONE : rc;
+            }
+            return SPEEDSQL_DONE;
+
+        case SQL_DROP_TABLE:
+            if (!stmt->executed) {
+                stmt->executed = true;
+                rc = execute_drop_table(stmt);
+                return (rc == SPEEDSQL_OK) ? SPEEDSQL_DONE : rc;
+            }
+            return SPEEDSQL_DONE;
+
+        case SQL_CREATE_INDEX:
+            if (!stmt->executed) {
+                stmt->executed = true;
+                rc = execute_create_index(stmt);
+                return (rc == SPEEDSQL_OK) ? SPEEDSQL_DONE : rc;
+            }
+            return SPEEDSQL_DONE;
+
+        case SQL_DROP_INDEX:
+            if (!stmt->executed) {
+                stmt->executed = true;
+                rc = execute_drop_index(stmt);
                 return (rc == SPEEDSQL_OK) ? SPEEDSQL_DONE : rc;
             }
             return SPEEDSQL_DONE;

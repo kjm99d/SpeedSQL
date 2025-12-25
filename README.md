@@ -247,7 +247,7 @@ SpeedSQL/
 
 ## Roadmap
 
-### v0.1 (Current)
+### v0.1
 - [x] Project structure
 - [x] File I/O layer
 - [x] Buffer pool / page cache
@@ -263,19 +263,25 @@ SpeedSQL/
 - [x] CREATE INDEX parsing
 - [x] Encryption key API (speedsql_key, speedsql_key_v2, speedsql_rekey)
 
-### v0.2
+### v1.0 (Current)
+- [x] UPDATE statement execution with WHERE filtering
+- [x] DELETE statement execution with WHERE filtering
+- [x] DROP TABLE / DROP INDEX execution
+- [x] CREATE INDEX execution
+- [x] ORDER BY clause with result buffering and sorting
+- [x] LIMIT / OFFSET pagination support
+- [x] Aggregate functions (COUNT, SUM, AVG, MIN, MAX)
+- [x] GROUP BY / HAVING clause parsing
+- [x] JOIN support (INNER, LEFT, RIGHT, CROSS)
+- [x] Schema persistence for file-based databases
 - [ ] Full transaction support (nested transactions, savepoints)
 - [ ] Page-level encryption integration
-- [ ] Secondary index execution
-- [ ] UPDATE/DELETE execution with indexes
+- [ ] Secondary index execution (index scan)
 
-### v0.3
+### v2.0
 - [ ] Query optimizer (cost-based)
-- [ ] Multi-table joins (nested loop, hash join)
+- [ ] Hash join for large tables
 - [ ] JSON functions
-- [ ] Aggregate functions
-
-### v1.0
 - [ ] CC certification preparation
 - [ ] Vector search
 - [ ] Full-text search

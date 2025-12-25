@@ -79,6 +79,323 @@ static int init_new_database(speedsql* db) {
     return SPEEDSQL_OK;
 }
 
+/* ============================================================================
+ * Schema Persistence
+ * ============================================================================ */
+
+/* Schema page layout:
+ * - page_type (1 byte) = PAGE_TYPE_SCHEMA
+ * - table_count (2 bytes)
+ * - index_count (2 bytes)
+ * - For each table:
+ *   - name_len (2 bytes) + name
+ *   - column_count (2 bytes)
+ *   - root_page (8 bytes)
+ *   - For each column:
+ *     - name_len (2 bytes) + name
+ *     - type (1 byte)
+ *     - flags (1 byte)
+ * - For each index:
+ *   - name_len (2 bytes) + name
+ *   - table_name_len (2 bytes) + table_name
+ *   - column_count (4 bytes)
+ *   - root_page (8 bytes)
+ *   - flags (1 byte)
+ *   - column_indices (4 bytes each)
+ */
+
+static int save_schema(speedsql* db) {
+    if (!db || (db->flags & SPEEDSQL_OPEN_MEMORY)) {
+        return SPEEDSQL_OK;  /* No-op for memory databases */
+    }
+
+    /* Allocate schema page buffer */
+    uint8_t* page = (uint8_t*)sdb_calloc(1, SPEEDSQL_PAGE_SIZE);
+    if (!page) return SPEEDSQL_NOMEM;
+
+    uint8_t* ptr = page;
+    uint8_t* end = page + SPEEDSQL_PAGE_SIZE;
+
+    /* Page type */
+    *ptr++ = PAGE_TYPE_SCHEMA;
+
+    /* Table count */
+    *(uint16_t*)ptr = (uint16_t)db->table_count;
+    ptr += 2;
+
+    /* Index count */
+    *(uint16_t*)ptr = (uint16_t)db->index_count;
+    ptr += 2;
+
+    /* Write tables */
+    for (size_t t = 0; t < db->table_count && ptr < end - 256; t++) {
+        table_def_t* tbl = &db->tables[t];
+
+        /* Table name */
+        uint16_t name_len = (uint16_t)strlen(tbl->name);
+        *(uint16_t*)ptr = name_len;
+        ptr += 2;
+        memcpy(ptr, tbl->name, name_len);
+        ptr += name_len;
+
+        /* Column count */
+        *(uint16_t*)ptr = (uint16_t)tbl->column_count;
+        ptr += 2;
+
+        /* Root page */
+        *(page_id_t*)ptr = tbl->root_page;
+        ptr += sizeof(page_id_t);
+
+        /* Table flags */
+        *ptr++ = tbl->flags;
+
+        /* Write columns */
+        for (uint32_t c = 0; c < tbl->column_count && ptr < end - 64; c++) {
+            column_def_t* col = &tbl->columns[c];
+
+            /* Column name */
+            uint16_t col_name_len = (uint16_t)strlen(col->name);
+            *(uint16_t*)ptr = col_name_len;
+            ptr += 2;
+            memcpy(ptr, col->name, col_name_len);
+            ptr += col_name_len;
+
+            /* Type and flags */
+            *ptr++ = col->type;
+            *ptr++ = col->flags;
+        }
+    }
+
+    /* Write indices */
+    for (size_t i = 0; i < db->index_count && ptr < end - 256; i++) {
+        index_def_t* idx = &db->indices[i];
+
+        /* Index name */
+        uint16_t name_len = (uint16_t)strlen(idx->name);
+        *(uint16_t*)ptr = name_len;
+        ptr += 2;
+        memcpy(ptr, idx->name, name_len);
+        ptr += name_len;
+
+        /* Table name */
+        uint16_t tbl_name_len = (uint16_t)strlen(idx->table_name);
+        *(uint16_t*)ptr = tbl_name_len;
+        ptr += 2;
+        memcpy(ptr, idx->table_name, tbl_name_len);
+        ptr += tbl_name_len;
+
+        /* Column count */
+        *(uint32_t*)ptr = idx->column_count;
+        ptr += 4;
+
+        /* Root page */
+        *(page_id_t*)ptr = idx->root_page;
+        ptr += sizeof(page_id_t);
+
+        /* Flags */
+        *ptr++ = idx->flags;
+
+        /* Column indices */
+        for (uint32_t c = 0; c < idx->column_count && ptr < end - 8; c++) {
+            *(uint32_t*)ptr = idx->column_indices[c];
+            ptr += 4;
+        }
+    }
+
+    /* Write to schema page (page 1, after header page) */
+    int rc = file_write(&db->db_file, SPEEDSQL_PAGE_SIZE, page, SPEEDSQL_PAGE_SIZE);
+    sdb_free(page);
+
+    if (rc != SPEEDSQL_OK) {
+        return rc;
+    }
+
+    /* Update header to indicate schema exists */
+    db->header.schema_root = 1;  /* Schema is on page 1 */
+    db->header.page_count = db->header.page_count < 2 ? 2 : db->header.page_count;
+    db->header.checksum = crc32(&db->header, offsetof(db_header_t, checksum));
+
+    /* Write updated header */
+    uint8_t header_page[SPEEDSQL_PAGE_SIZE] = {0};
+    memcpy(header_page, &db->header, sizeof(db->header));
+    rc = file_write(&db->db_file, 0, header_page, SPEEDSQL_PAGE_SIZE);
+
+    return rc;
+}
+
+static int load_schema(speedsql* db) {
+    if (!db || (db->flags & SPEEDSQL_OPEN_MEMORY)) {
+        return SPEEDSQL_OK;
+    }
+
+    if (db->header.schema_root == INVALID_PAGE_ID) {
+        return SPEEDSQL_OK;  /* No schema stored */
+    }
+
+    /* Read schema page */
+    uint8_t* page = (uint8_t*)sdb_malloc(SPEEDSQL_PAGE_SIZE);
+    if (!page) return SPEEDSQL_NOMEM;
+
+    int rc = file_read(&db->db_file, SPEEDSQL_PAGE_SIZE, page, SPEEDSQL_PAGE_SIZE);
+    if (rc != SPEEDSQL_OK) {
+        sdb_free(page);
+        return rc;
+    }
+
+    uint8_t* ptr = page;
+    uint8_t* end = page + SPEEDSQL_PAGE_SIZE;
+
+    /* Check page type */
+    if (*ptr++ != PAGE_TYPE_SCHEMA) {
+        sdb_free(page);
+        return SPEEDSQL_OK;  /* Not a schema page, skip */
+    }
+
+    /* Table count */
+    uint16_t table_count = *(uint16_t*)ptr;
+    ptr += 2;
+
+    /* Index count */
+    uint16_t index_count = *(uint16_t*)ptr;
+    ptr += 2;
+
+    /* Read tables */
+    if (table_count > 0) {
+        db->tables = (table_def_t*)sdb_calloc(table_count, sizeof(table_def_t));
+        if (!db->tables) {
+            sdb_free(page);
+            return SPEEDSQL_NOMEM;
+        }
+    }
+
+    for (uint16_t t = 0; t < table_count && ptr < end - 16; t++) {
+        table_def_t* tbl = &db->tables[db->table_count];
+
+        /* Table name */
+        uint16_t name_len = *(uint16_t*)ptr;
+        ptr += 2;
+        if (ptr + name_len > end) break;
+        tbl->name = (char*)sdb_malloc(name_len + 1);
+        if (tbl->name) {
+            memcpy(tbl->name, ptr, name_len);
+            tbl->name[name_len] = '\0';
+        }
+        ptr += name_len;
+
+        /* Column count */
+        uint16_t col_count = *(uint16_t*)ptr;
+        ptr += 2;
+        tbl->column_count = col_count;
+
+        /* Root page */
+        tbl->root_page = *(page_id_t*)ptr;
+        ptr += sizeof(page_id_t);
+
+        /* Table flags */
+        tbl->flags = *ptr++;
+
+        /* Allocate columns */
+        if (col_count > 0) {
+            tbl->columns = (column_def_t*)sdb_calloc(col_count, sizeof(column_def_t));
+        }
+
+        /* Read columns */
+        for (uint32_t c = 0; c < col_count && ptr < end - 8 && tbl->columns; c++) {
+            column_def_t* col = &tbl->columns[c];
+
+            /* Column name */
+            uint16_t col_name_len = *(uint16_t*)ptr;
+            ptr += 2;
+            if (ptr + col_name_len > end) break;
+            col->name = (char*)sdb_malloc(col_name_len + 1);
+            if (col->name) {
+                memcpy(col->name, ptr, col_name_len);
+                col->name[col_name_len] = '\0';
+            }
+            ptr += col_name_len;
+
+            /* Type and flags */
+            col->type = *ptr++;
+            col->flags = *ptr++;
+            col->default_value = nullptr;
+            col->collation = nullptr;
+        }
+
+        /* Re-create B+Tree for table data if root page exists */
+        if (tbl->root_page != INVALID_PAGE_ID) {
+            tbl->data_tree = (struct btree*)sdb_malloc(sizeof(btree_t));
+            if (tbl->data_tree) {
+                btree_open((btree_t*)tbl->data_tree, db->buffer_pool,
+                           &db->db_file, tbl->root_page, value_compare);
+            }
+        }
+
+        db->table_count++;
+    }
+
+    /* Read indices */
+    if (index_count > 0) {
+        db->indices = (index_def_t*)sdb_calloc(index_count, sizeof(index_def_t));
+        if (!db->indices) {
+            sdb_free(page);
+            return SPEEDSQL_NOMEM;
+        }
+    }
+
+    for (uint16_t i = 0; i < index_count && ptr < end - 32; i++) {
+        index_def_t* idx = &db->indices[db->index_count];
+
+        /* Index name */
+        uint16_t name_len = *(uint16_t*)ptr;
+        ptr += 2;
+        if (ptr + name_len > end) break;
+        idx->name = (char*)sdb_malloc(name_len + 1);
+        if (idx->name) {
+            memcpy(idx->name, ptr, name_len);
+            idx->name[name_len] = '\0';
+        }
+        ptr += name_len;
+
+        /* Table name */
+        uint16_t tbl_name_len = *(uint16_t*)ptr;
+        ptr += 2;
+        if (ptr + tbl_name_len > end) break;
+        idx->table_name = (char*)sdb_malloc(tbl_name_len + 1);
+        if (idx->table_name) {
+            memcpy(idx->table_name, ptr, tbl_name_len);
+            idx->table_name[tbl_name_len] = '\0';
+        }
+        ptr += tbl_name_len;
+
+        /* Column count */
+        idx->column_count = *(uint32_t*)ptr;
+        ptr += 4;
+
+        /* Root page */
+        idx->root_page = *(page_id_t*)ptr;
+        ptr += sizeof(page_id_t);
+
+        /* Flags */
+        idx->flags = *ptr++;
+
+        /* Column indices */
+        if (idx->column_count > 0) {
+            idx->column_indices = (uint32_t*)sdb_malloc(idx->column_count * sizeof(uint32_t));
+            if (idx->column_indices) {
+                for (uint32_t c = 0; c < idx->column_count && ptr < end - 4; c++) {
+                    idx->column_indices[c] = *(uint32_t*)ptr;
+                    ptr += 4;
+                }
+            }
+        }
+
+        db->index_count++;
+    }
+
+    sdb_free(page);
+    return SPEEDSQL_OK;
+}
+
 /* Read and validate database header */
 static int read_database_header(speedsql* db) {
     uint8_t page[SPEEDSQL_PAGE_SIZE];
@@ -251,12 +568,25 @@ SPEEDSQL_API int speedsql_open_v2(const char* filename, speedsql** db_out,
         }
     }
 
+    /* Load schema from file if exists */
+    if (!is_memory) {
+        rc = load_schema(db);
+        if (rc != SPEEDSQL_OK) {
+            /* Non-fatal - just continue without schema */
+        }
+    }
+
     *db_out = db;
     return SPEEDSQL_OK;
 }
 
 SPEEDSQL_API int speedsql_close(speedsql* db) {
     if (!db) return SPEEDSQL_MISUSE;
+
+    /* Save schema before closing (if file database) */
+    if (db->table_count > 0 || db->index_count > 0) {
+        save_schema(db);
+    }
 
     /* Flush buffer pool */
     if (db->buffer_pool) {

@@ -300,6 +300,22 @@ typedef struct {
     bool desc;
 } order_by_t;
 
+/* JOIN type */
+typedef enum {
+    JOIN_INNER = 0,
+    JOIN_LEFT = 1,
+    JOIN_RIGHT = 2,
+    JOIN_CROSS = 3
+} join_type_t;
+
+/* JOIN clause */
+typedef struct {
+    join_type_t type;
+    char* table_name;
+    char* table_alias;
+    expr_t* on_condition;
+} join_clause_t;
+
 /* Parsed statement */
 typedef struct {
     sql_op_t op;
@@ -309,6 +325,8 @@ typedef struct {
     int column_count;
     table_ref_t* tables;
     int table_count;
+    join_clause_t* joins;
+    int join_count;
     expr_t* where;
     expr_t** group_by;
     int group_by_count;

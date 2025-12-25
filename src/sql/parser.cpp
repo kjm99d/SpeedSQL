@@ -377,27 +377,104 @@ static parsed_stmt_t* parse_select(parser_t* parser) {
         int table_capacity = 4;
         stmt->tables = (table_ref_t*)sdb_malloc(table_capacity * sizeof(table_ref_t));
 
-        do {
-            if (stmt->table_count >= table_capacity) {
-                table_capacity *= 2;
-                stmt->tables = (table_ref_t*)sdb_realloc(stmt->tables,
-                    table_capacity * sizeof(table_ref_t));
+        /* First table */
+        consume(parser, TOK_IDENT, "Expected table name");
+        table_ref_t* tbl = &stmt->tables[stmt->table_count++];
+        tbl->name = copy_identifier(&parser->previous);
+        tbl->alias = nullptr;
+        tbl->def = nullptr;
+
+        if (match(parser, TOK_AS)) {
+            consume(parser, TOK_IDENT, "Expected alias name");
+            tbl->alias = copy_identifier(&parser->previous);
+        } else if (check(parser, TOK_IDENT) && !check(parser, TOK_JOIN) &&
+                   !check(parser, TOK_LEFT) && !check(parser, TOK_RIGHT) &&
+                   !check(parser, TOK_INNER) && !check(parser, TOK_WHERE) &&
+                   !check(parser, TOK_ORDER) && !check(parser, TOK_GROUP)) {
+            advance(parser);
+            tbl->alias = copy_identifier(&parser->previous);
+        }
+
+        /* Handle JOINs or comma-separated tables */
+        int join_capacity = 4;
+        stmt->joins = nullptr;
+        stmt->join_count = 0;
+
+        while (true) {
+            join_type_t join_type = JOIN_INNER;
+            bool has_join = false;
+
+            if (match(parser, TOK_COMMA)) {
+                /* Implicit cross join via comma */
+                if (stmt->table_count >= table_capacity) {
+                    table_capacity *= 2;
+                    stmt->tables = (table_ref_t*)sdb_realloc(stmt->tables,
+                        table_capacity * sizeof(table_ref_t));
+                }
+
+                consume(parser, TOK_IDENT, "Expected table name");
+                table_ref_t* next_tbl = &stmt->tables[stmt->table_count++];
+                next_tbl->name = copy_identifier(&parser->previous);
+                next_tbl->alias = nullptr;
+                next_tbl->def = nullptr;
+
+                if (match(parser, TOK_AS)) {
+                    consume(parser, TOK_IDENT, "Expected alias name");
+                    next_tbl->alias = copy_identifier(&parser->previous);
+                }
+                continue;
             }
 
-            consume(parser, TOK_IDENT, "Expected table name");
-            table_ref_t* tbl = &stmt->tables[stmt->table_count++];
-            tbl->name = copy_identifier(&parser->previous);
-            tbl->alias = nullptr;
-            tbl->def = nullptr;
+            if (match(parser, TOK_LEFT)) {
+                match(parser, TOK_OUTER);  /* Optional OUTER */
+                consume(parser, TOK_JOIN, "Expected JOIN after LEFT");
+                join_type = JOIN_LEFT;
+                has_join = true;
+            } else if (match(parser, TOK_RIGHT)) {
+                match(parser, TOK_OUTER);  /* Optional OUTER */
+                consume(parser, TOK_JOIN, "Expected JOIN after RIGHT");
+                join_type = JOIN_RIGHT;
+                has_join = true;
+            } else if (match(parser, TOK_INNER)) {
+                consume(parser, TOK_JOIN, "Expected JOIN after INNER");
+                join_type = JOIN_INNER;
+                has_join = true;
+            } else if (match(parser, TOK_JOIN)) {
+                join_type = JOIN_INNER;
+                has_join = true;
+            }
+
+            if (!has_join) break;
+
+            /* Allocate joins array if needed */
+            if (!stmt->joins) {
+                stmt->joins = (join_clause_t*)sdb_malloc(join_capacity * sizeof(join_clause_t));
+            } else if (stmt->join_count >= join_capacity) {
+                join_capacity *= 2;
+                stmt->joins = (join_clause_t*)sdb_realloc(stmt->joins,
+                    join_capacity * sizeof(join_clause_t));
+            }
+
+            join_clause_t* jc = &stmt->joins[stmt->join_count++];
+            jc->type = join_type;
+            jc->on_condition = nullptr;
+
+            consume(parser, TOK_IDENT, "Expected table name after JOIN");
+            jc->table_name = copy_identifier(&parser->previous);
+            jc->table_alias = nullptr;
 
             if (match(parser, TOK_AS)) {
                 consume(parser, TOK_IDENT, "Expected alias name");
-                tbl->alias = copy_identifier(&parser->previous);
-            } else if (check(parser, TOK_IDENT)) {
+                jc->table_alias = copy_identifier(&parser->previous);
+            } else if (check(parser, TOK_IDENT) && !check(parser, TOK_ON)) {
                 advance(parser);
-                tbl->alias = copy_identifier(&parser->previous);
+                jc->table_alias = copy_identifier(&parser->previous);
             }
-        } while (match(parser, TOK_COMMA));
+
+            if (match(parser, TOK_ON)) {
+                jc->on_condition = parse_expression(parser);
+            }
+        }
     }
 
     /* WHERE clause */
@@ -788,6 +865,40 @@ parsed_stmt_t* parser_parse(parser_t* parser) {
         return stmt;
     }
 
+    if (match(parser, TOK_DROP)) {
+        if (match(parser, TOK_TABLE)) {
+            /* DROP TABLE table_name */
+            parsed_stmt_t* stmt = (parsed_stmt_t*)sdb_calloc(1, sizeof(parsed_stmt_t));
+            if (!stmt) return nullptr;
+            stmt->op = SQL_DROP_TABLE;
+
+            consume(parser, TOK_IDENT, "Expected table name");
+            stmt->tables = (table_ref_t*)sdb_malloc(sizeof(table_ref_t));
+            if (stmt->tables) {
+                stmt->tables[0].name = copy_identifier(&parser->previous);
+                stmt->tables[0].alias = nullptr;
+                stmt->tables[0].def = nullptr;
+                stmt->table_count = 1;
+            }
+            return stmt;
+        }
+        if (match(parser, TOK_INDEX)) {
+            /* DROP INDEX index_name */
+            parsed_stmt_t* stmt = (parsed_stmt_t*)sdb_calloc(1, sizeof(parsed_stmt_t));
+            if (!stmt) return nullptr;
+            stmt->op = SQL_DROP_INDEX;
+
+            consume(parser, TOK_IDENT, "Expected index name");
+            stmt->new_index = (index_def_t*)sdb_calloc(1, sizeof(index_def_t));
+            if (stmt->new_index) {
+                stmt->new_index->name = copy_identifier(&parser->previous);
+            }
+            return stmt;
+        }
+        parser_error(parser, "Expected TABLE or INDEX after DROP");
+        return nullptr;
+    }
+
     parser_error(parser, "Expected SQL statement");
     return nullptr;
 }
@@ -848,6 +959,16 @@ void parsed_stmt_free(parsed_stmt_t* stmt) {
             sdb_free(stmt->tables[i].alias);
         }
         sdb_free(stmt->tables);
+    }
+
+    /* Free joins */
+    if (stmt->joins) {
+        for (int i = 0; i < stmt->join_count; i++) {
+            sdb_free(stmt->joins[i].table_name);
+            sdb_free(stmt->joins[i].table_alias);
+            expr_free(stmt->joins[i].on_condition);
+        }
+        sdb_free(stmt->joins);
     }
 
     expr_free(stmt->where);
