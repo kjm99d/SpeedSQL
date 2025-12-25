@@ -29,6 +29,7 @@ static struct {
 static const char* CRYPTO_VERSION = "SpeedSQL Crypto 1.0.0";
 
 /* Forward declarations of built-in providers */
+extern "C" {
 extern const speedsql_cipher_provider_t g_cipher_none;
 extern const speedsql_cipher_provider_t g_cipher_aes_256_gcm;
 extern const speedsql_cipher_provider_t g_cipher_aes_256_cbc;
@@ -36,6 +37,7 @@ extern const speedsql_cipher_provider_t g_cipher_aria_256_gcm;
 extern const speedsql_cipher_provider_t g_cipher_aria_256_cbc;
 extern const speedsql_cipher_provider_t g_cipher_seed_cbc;
 extern const speedsql_cipher_provider_t g_cipher_chacha20_poly1305;
+}
 
 /* Initialize crypto registry */
 static void crypto_registry_init(void) {
