@@ -12,16 +12,16 @@
 #include "speedsql_crypto.h"
 
 #include <string>
-#include <string_view>
 #include <vector>
 #include <optional>
 #include <memory>
 #include <stdexcept>
 #include <functional>
 #include <variant>
-#include <span>
+#include <cstdint>
+#include <cstring>
 
-namespace speedsql {
+namespace sdb {
 
 /* ============================================================================
  * Exception Classes
@@ -156,28 +156,22 @@ public:
         return *this;
     }
 
-    Statement& bind(int index, std::string_view value) {
+    Statement& bind(int index, const std::string& value) {
         check(speedsql_bind_text(stmt_, index, value.data(),
                                  static_cast<int>(value.size()), nullptr));
         return *this;
     }
 
-    Statement& bind(int index, const std::string& value) {
-        return bind(index, std::string_view(value));
-    }
-
     Statement& bind(int index, const char* value) {
-        return bind(index, std::string_view(value));
-    }
-
-    Statement& bind(int index, std::span<const uint8_t> value) {
-        check(speedsql_bind_blob(stmt_, index, value.data(),
-                                 static_cast<int>(value.size()), nullptr));
+        check(speedsql_bind_text(stmt_, index, value,
+                                 static_cast<int>(std::strlen(value)), nullptr));
         return *this;
     }
 
     Statement& bind(int index, const Blob& value) {
-        return bind(index, std::span<const uint8_t>(value));
+        check(speedsql_bind_blob(stmt_, index, value.data(),
+                                 static_cast<int>(value.size()), nullptr));
+        return *this;
     }
 
     template<typename T>
@@ -478,7 +472,7 @@ public:
     }
 
     /* Encryption */
-    void set_key(std::string_view password,
+    void set_key(const std::string& password,
                  const CryptoConfig& config = CryptoConfig()) {
         auto c_config = config.to_c();
         int rc = speedsql_key_v2(db_, password.data(),
@@ -488,7 +482,7 @@ public:
         }
     }
 
-    void rekey(std::string_view new_password) {
+    void rekey(const std::string& new_password) {
         int rc = speedsql_rekey(db_, new_password.data(),
                                 static_cast<int>(new_password.size()));
         if (rc != SPEEDSQL_OK) {
@@ -541,7 +535,7 @@ public:
     std::optional<T> query_single(const std::string& sql, Args&&... args) {
         auto stmt = query(sql, std::forward<Args>(args)...);
         if (stmt.step()) {
-            return stmt.get<T>(0);
+            return stmt.template get<T>(0);
         }
         return std::nullopt;
     }
@@ -551,7 +545,7 @@ public:
         std::vector<T> result;
         auto stmt = query(sql, std::forward<Args>(args)...);
         while (stmt.step()) {
-            result.push_back(stmt.get<T>(0));
+            result.push_back(stmt.template get<T>(0));
         }
         return result;
     }
@@ -618,6 +612,6 @@ inline bool run_crypto_self_test() {
     return speedsql_crypto_self_test() == SPEEDSQL_OK;
 }
 
-} // namespace speedsql
+} // namespace sdb
 
 #endif // SPEEDSQL_HPP

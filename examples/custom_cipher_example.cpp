@@ -141,22 +141,26 @@ static void custom_zeroize(speedsql_cipher_ctx_t* ctx) {
 }
 
 /* Custom cipher provider definition */
-static const speedsql_cipher_provider_t my_custom_cipher = {
-    .name = "CUSTOM-XOR-256",
-    .version = "1.0.0-demo",
-    .cipher_id = (speedsql_cipher_t)(SPEEDSQL_CIPHER_CUSTOM + 1),  /* Custom ID > 100 */
-    .key_size = 32,
-    .iv_size = 0,
-    .tag_size = 16,
-    .block_size = 1,
-    .init = custom_init,
-    .destroy = custom_destroy,
-    .encrypt = custom_encrypt,
-    .decrypt = custom_decrypt,
-    .rekey = custom_rekey,
-    .self_test = custom_self_test,
-    .zeroize = custom_zeroize
-};
+static speedsql_cipher_provider_t make_custom_cipher() {
+    speedsql_cipher_provider_t p = {};
+    p.name = "CUSTOM-XOR-256";
+    p.version = "1.0.0-demo";
+    p.cipher_id = (speedsql_cipher_t)(SPEEDSQL_CIPHER_CUSTOM + 1);  /* Custom ID > 100 */
+    p.key_size = 32;
+    p.iv_size = 0;
+    p.tag_size = 16;
+    p.block_size = 1;
+    p.init = custom_init;
+    p.destroy = custom_destroy;
+    p.encrypt = custom_encrypt;
+    p.decrypt = custom_decrypt;
+    p.rekey = custom_rekey;
+    p.self_test = custom_self_test;
+    p.zeroize = custom_zeroize;
+    return p;
+}
+
+static const speedsql_cipher_provider_t my_custom_cipher = make_custom_cipher();
 
 /* ============================================================================
  * Main Example
@@ -211,7 +215,8 @@ int main() {
     speedsql* db;
     speedsql_open("custom_cipher.sdb", &db);
 
-    speedsql_crypto_config_t config = {};
+    speedsql_crypto_config_t config;
+    memset(&config, 0, sizeof(config));
     config.cipher = (speedsql_cipher_t)(SPEEDSQL_CIPHER_CUSTOM + 1);
     config.kdf = SPEEDSQL_KDF_PBKDF2_SHA256;
     config.kdf_iterations = 10000;

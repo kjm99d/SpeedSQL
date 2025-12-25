@@ -7,6 +7,7 @@
 #include "speedsql.h"
 #include "speedsql_crypto.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Helper to print available ciphers */
@@ -17,7 +18,8 @@ void list_available_ciphers() {
     int count = 0;
     speedsql_list_ciphers(nullptr, &count);
 
-    speedsql_cipher_t* ciphers = new speedsql_cipher_t[count];
+    speedsql_cipher_t* ciphers = (speedsql_cipher_t*)malloc(count * sizeof(speedsql_cipher_t));
+    if (!ciphers) return;
     speedsql_list_ciphers(ciphers, &count);
 
     for (int i = 0; i < count; i++) {
@@ -29,7 +31,7 @@ void list_available_ciphers() {
         }
     }
 
-    delete[] ciphers;
+    free(ciphers);
     printf("\n");
 }
 
@@ -42,7 +44,8 @@ void example_no_encryption() {
     speedsql_open("example_plain.sdb", &db);
 
     /* Configure no encryption */
-    speedsql_crypto_config_t config = {};
+    speedsql_crypto_config_t config;
+    memset(&config, 0, sizeof(config));
     config.cipher = SPEEDSQL_CIPHER_NONE;
 
     speedsql_key_v2(db, nullptr, 0, &config);
@@ -73,14 +76,15 @@ void example_aes_encryption() {
     speedsql_random_salt(salt, sizeof(salt));
 
     /* Configure AES-256-GCM */
-    speedsql_crypto_config_t config = {};
+    speedsql_crypto_config_t config;
+    memset(&config, 0, sizeof(config));
     config.cipher = SPEEDSQL_CIPHER_AES_256_GCM;
     config.kdf = SPEEDSQL_KDF_PBKDF2_SHA256;
     config.kdf_iterations = 100000;  /* OWASP recommendation */
     memcpy(config.salt, salt, sizeof(salt));
 
     const char* password = "MySecurePassword123!";
-    speedsql_key_v2(db, password, strlen(password), &config);
+    speedsql_key_v2(db, password, (int)strlen(password), &config);
 
     speedsql_exec(db,
         "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)",
@@ -109,17 +113,18 @@ void example_aria_encryption() {
     speedsql_random_salt(salt, sizeof(salt));
 
     /* Configure ARIA-256-GCM for Korean CC certification */
-    speedsql_crypto_config_t config = {};
+    speedsql_crypto_config_t config;
+    memset(&config, 0, sizeof(config));
     config.cipher = SPEEDSQL_CIPHER_ARIA_256_GCM;
     config.kdf = SPEEDSQL_KDF_PBKDF2_SHA512;
     config.kdf_iterations = 150000;
     memcpy(config.salt, salt, sizeof(salt));
 
-    const char* password = "한글비밀번호도가능합니다!";
-    speedsql_key_v2(db, password, strlen(password), &config);
+    const char* password = "SecurePassword123";
+    speedsql_key_v2(db, password, (int)strlen(password), &config);
 
     speedsql_exec(db,
-        "CREATE TABLE 고객정보 (번호 INTEGER, 이름 TEXT, 주민번호 TEXT)",
+        "CREATE TABLE customer_info (id INTEGER, name TEXT, ssn TEXT)",
         nullptr, nullptr, nullptr);
 
     printf("Created ARIA-encrypted database: example_aria.sdb\n");
@@ -141,7 +146,8 @@ void example_chacha20_encryption() {
     speedsql_random_salt(salt, sizeof(salt));
 
     /* Configure ChaCha20 - good for mobile without AES hardware */
-    speedsql_crypto_config_t config = {};
+    speedsql_crypto_config_t config;
+    memset(&config, 0, sizeof(config));
     config.cipher = SPEEDSQL_CIPHER_CHACHA20_POLY1305;
     config.kdf = SPEEDSQL_KDF_ARGON2ID;  /* Memory-hard KDF */
     config.kdf_memory = 65536;          /* 64MB memory */
@@ -150,7 +156,7 @@ void example_chacha20_encryption() {
     memcpy(config.salt, salt, sizeof(salt));
 
     const char* password = "MobileSecurePassword";
-    speedsql_key_v2(db, password, strlen(password), &config);
+    speedsql_key_v2(db, password, (int)strlen(password), &config);
 
     speedsql_exec(db,
         "CREATE TABLE notes (id INTEGER, content TEXT, created_at INTEGER)",
@@ -174,14 +180,15 @@ void example_seed_encryption() {
     speedsql_random_salt(salt, sizeof(salt));
 
     /* Configure SEED for legacy Korean systems */
-    speedsql_crypto_config_t config = {};
+    speedsql_crypto_config_t config;
+    memset(&config, 0, sizeof(config));
     config.cipher = SPEEDSQL_CIPHER_SEED_CBC;
     config.kdf = SPEEDSQL_KDF_PBKDF2_SHA256;
     config.kdf_iterations = 100000;
     memcpy(config.salt, salt, sizeof(salt));
 
     const char* password = "LegacySystemPassword";
-    speedsql_key_v2(db, password, strlen(password), &config);
+    speedsql_key_v2(db, password, (int)strlen(password), &config);
 
     printf("Created SEED-encrypted database: example_seed.sdb\n");
     printf("Compatible with Korean legacy systems\n\n");
@@ -216,13 +223,14 @@ void example_key_rotation() {
     speedsql_open("example_rekey.sdb", &db);
 
     /* Initial encryption */
-    speedsql_crypto_config_t config = {};
+    speedsql_crypto_config_t config;
+    memset(&config, 0, sizeof(config));
     config.cipher = SPEEDSQL_CIPHER_AES_256_GCM;
     config.kdf = SPEEDSQL_KDF_PBKDF2_SHA256;
     config.kdf_iterations = 100000;
 
     const char* old_password = "OldPassword123";
-    speedsql_key_v2(db, old_password, strlen(old_password), &config);
+    speedsql_key_v2(db, old_password, (int)strlen(old_password), &config);
 
     speedsql_exec(db,
         "CREATE TABLE secrets (id INTEGER, data BLOB)",
@@ -232,7 +240,7 @@ void example_key_rotation() {
 
     /* Rotate to new key */
     const char* new_password = "NewSecurePassword456!";
-    int rc = speedsql_rekey(db, new_password, strlen(new_password));
+    int rc = speedsql_rekey(db, new_password, (int)strlen(new_password));
 
     if (rc == SPEEDSQL_OK) {
         printf("Key rotation successful\n");

@@ -8,7 +8,7 @@
 #include <iostream>
 #include <iomanip>
 
-using namespace speedsql;
+using namespace sdb;
 
 /* ============================================================================
  * Example 1: Basic Database Operations
@@ -88,17 +88,20 @@ void example_transactions() {
         db.exec("INSERT INTO accounts VALUES (2, 'Savings', 5000.0)");
 
         std::cout << "Initial balances:\n";
-        for (auto& row : db.query("SELECT name, balance FROM accounts")) {
-            std::cout << "  " << std::get<std::string>(row[0]) << ": $"
-                      << std::fixed << std::setprecision(2)
-                      << std::get<double>(row[1]) << "\n";
+        {
+            auto stmt = db.prepare("SELECT name, balance FROM accounts");
+            while (stmt.step()) {
+                std::cout << "  " << stmt.get<std::string>(0) << ": $"
+                          << std::fixed << std::setprecision(2)
+                          << stmt.get<double>(1) << "\n";
+            }
         }
 
         // Transfer money using transaction
         std::cout << "\nTransferring $500 from Checking to Savings...\n";
 
         {
-            Transaction txn(db);  // Begin transaction
+            auto txn = db.begin_transaction();  // Begin transaction
 
             db.exec("UPDATE accounts SET balance = balance - 500 WHERE id = 1");
             db.exec("UPDATE accounts SET balance = balance + 500 WHERE id = 2");
@@ -108,10 +111,13 @@ void example_transactions() {
         }
 
         std::cout << "\nFinal balances:\n";
-        for (auto& row : db.query("SELECT name, balance FROM accounts")) {
-            std::cout << "  " << std::get<std::string>(row[0]) << ": $"
-                      << std::fixed << std::setprecision(2)
-                      << std::get<double>(row[1]) << "\n";
+        {
+            auto stmt = db.prepare("SELECT name, balance FROM accounts");
+            while (stmt.step()) {
+                std::cout << "  " << stmt.get<std::string>(0) << ": $"
+                          << std::fixed << std::setprecision(2)
+                          << stmt.get<double>(1) << "\n";
+            }
         }
 
         // Lambda-based transaction
@@ -122,8 +128,10 @@ void example_transactions() {
         });
 
         auto savings = db.query_single<double>("SELECT balance FROM accounts WHERE id = 2");
-        std::cout << "Savings after 5% interest: $" << std::fixed << std::setprecision(2)
-                  << savings << "\n\n";
+        if (savings) {
+            std::cout << "Savings after 5% interest: $" << std::fixed << std::setprecision(2)
+                      << *savings << "\n\n";
+        }
 
     } catch (const DatabaseException& e) {
         std::cerr << "Database error: " << e.what() << "\n";
@@ -158,7 +166,9 @@ void example_encryption() {
 
         // Read back
         auto secret = db.query_single<std::string>("SELECT data FROM secrets WHERE id = 1");
-        std::cout << "Stored secret: " << secret << "\n";
+        if (secret) {
+            std::cout << "Stored secret: " << *secret << "\n";
+        }
 
         // Key rotation
         std::cout << "\nRotating encryption key...\n";
@@ -237,21 +247,26 @@ void example_iterator() {
 
         std::cout << "Products list:\n";
 
-        // Using range-based for with statement
-        Statement stmt = db.prepare("SELECT id, name, price FROM products ORDER BY price DESC");
-        for (auto& row : stmt) {
-            std::cout << "  #" << std::get<int64_t>(row[0]) << " "
-                      << std::get<std::string>(row[1]) << " - $"
-                      << std::fixed << std::setprecision(2)
-                      << std::get<double>(row[2]) << "\n";
+        // Using while loop with statement
+        {
+            Statement stmt = db.prepare("SELECT id, name, price FROM products ORDER BY price DESC");
+            while (stmt.step()) {
+                std::cout << "  #" << stmt.get<int64_t>(0) << " "
+                          << stmt.get<std::string>(1) << " - $"
+                          << std::fixed << std::setprecision(2)
+                          << stmt.get<double>(2) << "\n";
+            }
         }
 
-        // Using query() which returns vector of rows
+        // Using prepare/step pattern
         std::cout << "\nProducts under $100:\n";
-        for (auto& row : db.query("SELECT name, price FROM products WHERE price < 100")) {
-            std::cout << "  " << std::get<std::string>(row[0]) << " - $"
-                      << std::fixed << std::setprecision(2)
-                      << std::get<double>(row[1]) << "\n";
+        {
+            auto stmt = db.prepare("SELECT name, price FROM products WHERE price < 100");
+            while (stmt.step()) {
+                std::cout << "  " << stmt.get<std::string>(0) << " - $"
+                          << std::fixed << std::setprecision(2)
+                          << stmt.get<double>(1) << "\n";
+            }
         }
 
         // Single column query
@@ -309,8 +324,8 @@ void example_error_handling() {
         std::cout << "Transaction rolled back due to: " << e.what() << "\n";
 
         // Verify rollback
-        Database db("cpp_errors.sdb");
-        auto value = db.query_single<int64_t>("SELECT value FROM safe WHERE id = 1");
+        Database db2("cpp_errors.sdb");
+        auto value = db2.query_single<int64_t>("SELECT value FROM safe WHERE id = 1");
         std::cout << "Value after rollback: " << (value ? *value : 0) << " (unchanged)\n\n";
     }
 }

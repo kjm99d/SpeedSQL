@@ -1,9 +1,9 @@
 /*
- * SpeedDB - Test Suite
+ * SpeedSQL - Test Suite
  */
 
-#include "speeddb.h"
-#include "speeddb_internal.h"
+#include "speedsql.h"
+#include "speedsql_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,32 +55,32 @@ static int failed = 0;
 TEST(value_null) {
     value_t v;
     value_init_null(&v);
-    ASSERT_EQ(v.type, SPEEDDB_TYPE_NULL);
+    ASSERT_EQ(v.type, VAL_NULL);
     value_free(&v);
 }
 
 TEST(value_int) {
     value_t v;
     value_init_int(&v, 42);
-    ASSERT_EQ(v.type, SPEEDDB_TYPE_INT);
-    ASSERT_EQ(v.data.i64, 42);
+    ASSERT_EQ(v.type, VAL_INT);
+    ASSERT_EQ(v.data.i, 42);
     value_free(&v);
 }
 
 TEST(value_float) {
     value_t v;
     value_init_float(&v, 3.14159);
-    ASSERT_EQ(v.type, SPEEDDB_TYPE_FLOAT);
-    ASSERT_TRUE(v.data.f64 > 3.14 && v.data.f64 < 3.15);
+    ASSERT_EQ(v.type, VAL_FLOAT);
+    ASSERT_TRUE(v.data.f > 3.14 && v.data.f < 3.15);
     value_free(&v);
 }
 
 TEST(value_text) {
     value_t v;
-    value_init_text(&v, "Hello, SpeedDB!", -1);
-    ASSERT_EQ(v.type, SPEEDDB_TYPE_TEXT);
-    ASSERT_STR_EQ(v.data.str.data, "Hello, SpeedDB!");
-    ASSERT_EQ(v.data.str.len, 15);
+    value_init_text(&v, "Hello, SpeedSQL!", -1);
+    ASSERT_EQ(v.type, VAL_TEXT);
+    ASSERT_STR_EQ(v.data.text.data, "Hello, SpeedSQL!");
+    ASSERT_EQ(v.data.text.len, 16u);
     value_free(&v);
 }
 
@@ -89,9 +89,9 @@ TEST(value_copy) {
     value_init_text(&src, "Copy test", -1);
     value_copy(&dst, &src);
 
-    ASSERT_EQ(dst.type, SPEEDDB_TYPE_TEXT);
-    ASSERT_STR_EQ(dst.data.str.data, "Copy test");
-    ASSERT_NE(dst.data.str.data, src.data.str.data);  /* Deep copy */
+    ASSERT_EQ(dst.type, VAL_TEXT);
+    ASSERT_STR_EQ(dst.data.text.data, "Copy test");
+    ASSERT_NE(dst.data.text.data, src.data.text.data);  /* Deep copy */
 
     value_free(&src);
     value_free(&dst);
@@ -105,6 +105,7 @@ TEST(value_compare_int) {
     ASSERT_TRUE(value_compare(&a, &b) < 0);
     ASSERT_TRUE(value_compare(&b, &a) > 0);
 
+    value_free(&b);
     value_init_int(&b, 10);
     ASSERT_EQ(value_compare(&a, &b), 0);
 
@@ -140,12 +141,12 @@ TEST(crc32_basic) {
 }
 
 TEST(xxhash64_basic) {
-    const char* data = "SpeedDB test data";
+    const char* data = "SpeedSQL test data";
     uint64_t hash1 = xxhash64(data, strlen(data));
     uint64_t hash2 = xxhash64(data, strlen(data));
     ASSERT_EQ(hash1, hash2);
 
-    const char* data2 = "SpeedDB test datb";
+    const char* data2 = "SpeedSQL test datb";
     uint64_t hash3 = xxhash64(data2, strlen(data2));
     ASSERT_NE(hash1, hash3);
 }
@@ -316,9 +317,144 @@ TEST(parser_create_table) {
     ASSERT_EQ(stmt->op, SQL_CREATE_TABLE);
     ASSERT_NE(stmt->new_table, nullptr);
     ASSERT_STR_EQ(stmt->new_table->name, "users");
-    ASSERT_EQ(stmt->new_table->column_count, 2);
+    ASSERT_EQ(stmt->new_table->column_count, 2u);
 
     parsed_stmt_free(stmt);
+}
+
+TEST(parser_create_index) {
+    parser_t parser;
+    parser_init(&parser, nullptr,
+        "CREATE INDEX idx_name ON users (name)");
+
+    parsed_stmt_t* stmt = parser_parse(&parser);
+    ASSERT_NE(stmt, nullptr);
+    ASSERT_EQ(stmt->op, SQL_CREATE_INDEX);
+    ASSERT_NE(stmt->new_index, nullptr);
+    ASSERT_STR_EQ(stmt->new_index->name, "idx_name");
+    ASSERT_STR_EQ(stmt->new_index->table_name, "users");
+
+    parsed_stmt_free(stmt);
+}
+
+TEST(parser_create_unique_index) {
+    parser_t parser;
+    parser_init(&parser, nullptr,
+        "CREATE UNIQUE INDEX idx_email ON users (email)");
+
+    parsed_stmt_t* stmt = parser_parse(&parser);
+    ASSERT_NE(stmt, nullptr);
+    ASSERT_EQ(stmt->op, SQL_CREATE_INDEX);
+    ASSERT_NE(stmt->new_index, nullptr);
+    ASSERT_TRUE(stmt->new_index->flags & IDX_FLAG_UNIQUE);
+
+    parsed_stmt_free(stmt);
+}
+
+/* ============================================================================
+ * Database API Tests
+ * ============================================================================ */
+
+TEST(db_open_close) {
+    speedsql* db = nullptr;
+    int rc = speedsql_open(":memory:", &db);
+    ASSERT_EQ(rc, SPEEDSQL_OK);
+    ASSERT_NE(db, nullptr);
+
+    rc = speedsql_close(db);
+    ASSERT_EQ(rc, SPEEDSQL_OK);
+}
+
+TEST(db_exec_create_table) {
+    speedsql* db = nullptr;
+    speedsql_open(":memory:", &db);
+
+    int rc = speedsql_exec(db,
+        "CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)",
+        nullptr, nullptr, nullptr);
+    ASSERT_EQ(rc, SPEEDSQL_OK);
+
+    speedsql_close(db);
+}
+
+TEST(db_exec_insert_select) {
+    speedsql* db = nullptr;
+    speedsql_open(":memory:", &db);
+
+    speedsql_exec(db, "CREATE TABLE test (id INTEGER, name TEXT)",
+        nullptr, nullptr, nullptr);
+
+    int rc = speedsql_exec(db, "INSERT INTO test VALUES (1, 'Alice')",
+        nullptr, nullptr, nullptr);
+    ASSERT_EQ(rc, SPEEDSQL_OK);
+
+    rc = speedsql_exec(db, "INSERT INTO test VALUES (2, 'Bob')",
+        nullptr, nullptr, nullptr);
+    ASSERT_EQ(rc, SPEEDSQL_OK);
+
+    speedsql_close(db);
+}
+
+TEST(db_prepared_stmt) {
+    speedsql* db = nullptr;
+    speedsql_open(":memory:", &db);
+
+    speedsql_exec(db, "CREATE TABLE test (id INTEGER, name TEXT)",
+        nullptr, nullptr, nullptr);
+    speedsql_exec(db, "INSERT INTO test VALUES (1, 'Alice')",
+        nullptr, nullptr, nullptr);
+    speedsql_exec(db, "INSERT INTO test VALUES (2, 'Bob')",
+        nullptr, nullptr, nullptr);
+
+    speedsql_stmt* stmt = nullptr;
+    int rc = speedsql_prepare(db, "SELECT * FROM test", -1, &stmt, nullptr);
+    ASSERT_EQ(rc, SPEEDSQL_OK);
+    ASSERT_NE(stmt, nullptr);
+
+    int count = 0;
+    while (speedsql_step(stmt) == SPEEDSQL_ROW) {
+        count++;
+    }
+    ASSERT_EQ(count, 2);
+
+    speedsql_finalize(stmt);
+    speedsql_close(db);
+}
+
+TEST(db_transaction) {
+    speedsql* db = nullptr;
+    speedsql_open(":memory:", &db);
+
+    speedsql_exec(db, "CREATE TABLE test (id INTEGER)",
+        nullptr, nullptr, nullptr);
+
+    int rc = speedsql_begin(db);
+    ASSERT_EQ(rc, SPEEDSQL_OK);
+
+    speedsql_exec(db, "INSERT INTO test VALUES (1)",
+        nullptr, nullptr, nullptr);
+
+    rc = speedsql_commit(db);
+    ASSERT_EQ(rc, SPEEDSQL_OK);
+
+    speedsql_close(db);
+}
+
+/* ============================================================================
+ * Encryption Tests
+ * ============================================================================ */
+
+TEST(crypto_status) {
+    speedsql* db = nullptr;
+    speedsql_open(":memory:", &db);
+
+    speedsql_cipher_t cipher;
+    bool encrypted = true;
+    int rc = speedsql_crypto_status(db, &cipher, &encrypted);
+    ASSERT_EQ(rc, SPEEDSQL_OK);
+    ASSERT_FALSE(encrypted);
+
+    speedsql_close(db);
 }
 
 /* ============================================================================
@@ -326,8 +462,8 @@ TEST(parser_create_table) {
  * ============================================================================ */
 
 int main() {
-    printf("SpeedDB Test Suite\n");
-    printf("==================\n\n");
+    printf("SpeedSQL Test Suite\n");
+    printf("===================\n\n");
 
     /* Value tests */
     printf("Value Tests:\n");
@@ -360,8 +496,22 @@ int main() {
     RUN_TEST(parser_update);
     RUN_TEST(parser_delete);
     RUN_TEST(parser_create_table);
+    RUN_TEST(parser_create_index);
+    RUN_TEST(parser_create_unique_index);
 
-    printf("\n==================\n");
+    /* Database API tests */
+    printf("\nDatabase API Tests:\n");
+    RUN_TEST(db_open_close);
+    RUN_TEST(db_exec_create_table);
+    RUN_TEST(db_exec_insert_select);
+    RUN_TEST(db_prepared_stmt);
+    RUN_TEST(db_transaction);
+
+    /* Encryption tests */
+    printf("\nEncryption Tests:\n");
+    RUN_TEST(crypto_status);
+
+    printf("\n===================\n");
     printf("Results: %d passed, %d failed\n", passed, failed);
 
     return failed > 0 ? 1 : 0;
